@@ -15,7 +15,7 @@ import (
 //
 // 契约由 routes.go 里一行 Stateless 支撑，丢掉它编译和其他单测都不会报错。
 func TestMCPStatelessSinglePost(t *testing.T) {
-	router := setupRoutes(NewAppServer(NewXiaohongshuService(), ""))
+	router := setupRoutes(NewAppServer(NewXiaohongshuService(), withMCP()))
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -25,6 +25,7 @@ func TestMCPStatelessSinglePost(t *testing.T) {
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set("Authorization", "Bearer "+testAccess.WriteToken)
 
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
@@ -58,7 +59,7 @@ func TestMCPStatelessSinglePost(t *testing.T) {
 // 三个工具的注册各是 registerTools 里一段独立代码，漏掉任何一个编译都不会报错，
 // 只有真正调用时才会发现工具不存在。
 func TestNotificationToolsRegistered(t *testing.T) {
-	router := setupRoutes(NewAppServer(NewXiaohongshuService(), ""))
+	router := setupRoutes(NewAppServer(NewXiaohongshuService(), withMCP()))
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -67,6 +68,7 @@ func TestNotificationToolsRegistered(t *testing.T) {
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+testAccess.WriteToken)
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
@@ -91,68 +93,93 @@ func TestNotificationToolsRegistered(t *testing.T) {
 	}
 }
 
-// TestNotificationRoutesRegistered 固定通知的 HTTP 路由存在。
-//
-// 读路由表而不是发请求：这些 handler 会真的起浏览器访问小红书，
-// 单测里不能碰。
-func TestNotificationRoutesRegistered(t *testing.T) {
-	router := setupRoutes(NewAppServer(NewXiaohongshuService(), ""))
+func withMCP() accessConfig {
+	cfg := testAccess
+	cfg.EnableMCP = true
+	return cfg
+}
+
+// TestRegisteredRoutes 固定路由表：只注册 Marketing_Agent 用到的路由。
+// 读路由表而不是发请求：这些 handler 会真的起浏览器访问小红书，单测里不能碰。
+func TestRegisteredRoutes(t *testing.T) {
+	router := setupRoutes(NewAppServer(NewXiaohongshuService(), testAccess))
 
 	registered := make(map[string]bool)
 	for _, r := range router.Routes() {
 		registered[r.Method+" "+r.Path] = true
 	}
-
-	// 列表接口两个参数都可选，GET 也要能进
 	for _, want := range []string{
+		"GET /health",
+		"GET /api/v1/login/status",
+		"POST /api/v1/feeds/search",
+		"POST /api/v1/feeds/detail",
+		"POST /api/v1/user/profile",
+		"GET /api/v1/user/me",
 		"GET /api/v1/notifications/unread",
-		"GET /api/v1/notifications/list",
 		"POST /api/v1/notifications/list",
-		"POST /api/v1/notifications/reply",
-		"POST /api/v1/notifications/like",
+		"POST /api/v1/publish",
+		"POST /api/v1/feeds/comment",
+		"POST /api/v1/feeds/comment/reply",
 	} {
 		assert.True(t, registered[want], "路由 %s 应已注册", want)
 	}
+	for _, gone := range []string{
+		"GET /api/v1/login/qrcode",
+		"DELETE /api/v1/login/cookies",
+		"POST /api/v1/publish_video",
+		"GET /api/v1/feeds/list",
+		"POST /api/v1/feeds/like",
+		"POST /api/v1/feeds/favorite",
+		"POST /api/v1/notifications/reply",
+		"POST /api/v1/notifications/like",
+		"POST /mcp",
+	} {
+		assert.False(t, registered[gone], "路由 %s 不应注册", gone)
+	}
 }
 
-func TestProtectedRoutesRequireBearerToken(t *testing.T) {
-	router := setupRoutes(NewAppServer(NewXiaohongshuService(), "secret-token"))
+// TestRouteScopes 写路由拒绝读 token；鉴权通过后请求体为空，在起浏览器之前就被参数校验拦下（400）。
+func TestRouteScopes(t *testing.T) {
+	router := setupRoutes(NewAppServer(NewXiaohongshuService(), withMCP()))
+	read, write := "Bearer "+testAccess.ReadToken, "Bearer "+testAccess.WriteToken
 
 	tests := []struct {
-		name       string
-		method     string
-		path       string
-		wantStatus int
+		name          string
+		method        string
+		path          string
+		authorization string
+		want          int
 	}{
-		{name: "health remains public", method: http.MethodGet, path: "/health", wantStatus: http.StatusOK},
-		{name: "MCP requires token", method: http.MethodPost, path: "/mcp", wantStatus: http.StatusUnauthorized},
-		{name: "MCP child path requires token", method: http.MethodPost, path: "/mcp/child", wantStatus: http.StatusUnauthorized},
-		{name: "HTTP API requires token", method: http.MethodGet, path: "/api/v1/notifications/unread", wantStatus: http.StatusUnauthorized},
-		{name: "CORS preflight remains public", method: http.MethodOptions, path: "/mcp", wantStatus: http.StatusNoContent},
+		{"健康检查公开", http.MethodGet, "/health", "", http.StatusOK},
+		{"读路由要 token", http.MethodPost, "/api/v1/feeds/detail", "", http.StatusUnauthorized},
+		{"读路由接受读 token", http.MethodPost, "/api/v1/feeds/detail", read, http.StatusBadRequest},
+		{"写路由拒绝读 token", http.MethodPost, "/api/v1/feeds/comment", read, http.StatusForbidden},
+		{"写路由接受写 token", http.MethodPost, "/api/v1/feeds/comment", write, http.StatusBadRequest},
+		{"回复拒绝读 token", http.MethodPost, "/api/v1/feeds/comment/reply", read, http.StatusForbidden},
+		{"发布拒绝读 token", http.MethodPost, "/api/v1/publish", read, http.StatusForbidden},
+		{"MCP 拒绝读 token", http.MethodPost, "/mcp", read, http.StatusForbidden},
+		{"没有 CORS 预检", http.MethodOptions, "/api/v1/feeds/detail", "", http.StatusNotFound},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
-			request := httptest.NewRequest(tt.method, tt.path, nil)
-
+			request := httptest.NewRequest(tt.method, tt.path, strings.NewReader(""))
+			request.Header.Set("Content-Type", "application/json")
+			if tt.authorization != "" {
+				request.Header.Set("Authorization", tt.authorization)
+			}
 			router.ServeHTTP(recorder, request)
-
-			assert.Equal(t, tt.wantStatus, recorder.Code)
+			assert.Equal(t, tt.want, recorder.Code)
+			assert.Empty(t, recorder.Header().Get("Access-Control-Allow-Origin"))
 		})
 	}
 }
 
-func TestMCPAcceptsConfiguredBearerToken(t *testing.T) {
-	router := setupRoutes(NewAppServer(NewXiaohongshuService(), "secret-token"))
+func TestMCPDisabledByDefault(t *testing.T) {
+	router := setupRoutes(NewAppServer(NewXiaohongshuService(), testAccess))
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/mcp",
-		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
-	request.Header.Set("Authorization", "Bearer secret-token")
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Accept", "application/json, text/event-stream")
-
+	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader("{}"))
+	request.Header.Set("Authorization", "Bearer "+testAccess.WriteToken)
 	router.ServeHTTP(recorder, request)
-
-	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Equal(t, http.StatusNotFound, recorder.Code)
 }

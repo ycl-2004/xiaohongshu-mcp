@@ -106,13 +106,35 @@ func (c *localCookie) write(cks []byte, seed int) error {
 		return errors.Wrap(err, "marshal session file failed")
 	}
 
-	if dir := filepath.Dir(c.path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return errors.Wrap(err, "create cookies dir failed")
-		}
-	}
+	return writePrivateAtomic(c.path, data)
+}
 
-	return os.WriteFile(c.path, data, 0644)
+// writePrivateAtomic 以 0600 原子写入：先写同目录临时文件再改名，崩溃时不会留下半个会话文件。
+// Modified for ycl-2004/xiaohongshu-mcp（上游直接 0644 覆盖写）；see NOTICE.
+func writePrivateAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return errors.Wrap(err, "create cookies dir failed")
+	}
+	f, err := os.CreateTemp(dir, ".cookies-*")
+	if err != nil {
+		return errors.Wrap(err, "create temp cookies file failed")
+	}
+	defer os.Remove(f.Name()) // 改名成功后它已不存在，删除无害
+	defer f.Close()
+	if err := f.Chmod(0600); err != nil {
+		return errors.Wrap(err, "chmod cookies file failed")
+	}
+	if _, err := f.Write(data); err != nil {
+		return errors.Wrap(err, "write cookies file failed")
+	}
+	if err := f.Sync(); err != nil {
+		return errors.Wrap(err, "sync cookies file failed")
+	}
+	if err := f.Close(); err != nil {
+		return errors.Wrap(err, "close cookies file failed")
+	}
+	return os.Rename(f.Name(), path)
 }
 
 // DeleteCookies 删除 cookies 文件。
@@ -124,25 +146,12 @@ func (c *localCookie) DeleteCookies() error {
 	return os.Remove(c.path)
 }
 
-// GetCookiesFilePath 获取 cookies 文件路径。
-// 为了向后兼容，如果旧路径 /tmp/cookies.json 存在，则继续使用；
-// 否则使用当前目录下的 cookies.json
+// GetCookiesFilePath 获取 cookies 文件路径：COOKIES_PATH 优先，否则当前目录下的 cookies.json。
+// Modified for ycl-2004/xiaohongshu-mcp：去掉了上游回落到共享 /tmp/cookies.json 的旧路径。
 func GetCookiesFilePath() string {
 	// 显式指定优先，无条件——环境里的残留文件不能盖掉用户明说的配置
 	if path := os.Getenv("COOKIES_PATH"); path != "" {
 		return path
 	}
-
-	// 本地目录
-	if _, err := os.Stat(localCookiesPath); err == nil {
-		return localCookiesPath
-	}
-
-	// 旧路径 /tmp/cookies.json，仅为老用户兜底
-	oldPath := filepath.Join(os.TempDir(), "cookies.json")
-	if _, err := os.Stat(oldPath); err == nil {
-		return oldPath
-	}
-
 	return localCookiesPath
 }
