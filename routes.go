@@ -56,6 +56,7 @@ func setupRoutes(appServer *AppServer) *gin.Engine {
 		read.GET("/user/me", appServer.myProfileHandler)
 		read.GET("/notifications/unread", appServer.getUnreadCountHandler)
 		read.POST("/notifications/list", appServer.listNotificationsHandler)
+		read.GET("/chat/conversations", appServer.chatConversationsHandler)
 	}
 
 	write := router.Group("/api/v1", scopeMiddleware(cfg, scopeWrite), serial)
