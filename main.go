@@ -5,6 +5,7 @@ package main
 import (
 	"flag"
 	"os"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/xpzouying/xiaohongshu-mcp/browser"
@@ -20,12 +21,14 @@ func main() {
 		headless bool
 		port     string
 		access   accessConfig
+		lockWait time.Duration
 	)
 	flag.BoolVar(&headless, "headless", true, "是否无头模式")
 	flag.StringVar(&port, "port", "127.0.0.1:18060", "监听地址，只允许本机回环地址")
 	flag.StringVar(&access.ReadToken, "token-read", "", "只读 token，留空则读取 AUTH_TOKEN_READ")
 	flag.StringVar(&access.WriteToken, "token-write", "", "读写 token，留空则读取 AUTH_TOKEN_WRITE")
 	flag.BoolVar(&access.EnableMCP, "enable-mcp", false, "开启 /mcp 端点（需要写 token）")
+	flag.DurationVar(&lockWait, "lock-wait", 15*time.Minute, "浏览器操作排队的最长等待，超时返回 503 BUSY")
 	flag.Parse()
 	if access.ReadToken == "" {
 		access.ReadToken = os.Getenv("AUTH_TOKEN_READ")
@@ -63,6 +66,7 @@ func main() {
 
 	// 创建并启动应用服务器
 	appServer := NewAppServer(xiaohongshuService, access)
+	appServer.lockWait = lockWait
 	if err := appServer.Start(port); err != nil {
 		logrus.Fatalf("failed to run server: %v", err)
 	}
