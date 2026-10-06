@@ -49,6 +49,7 @@ func setupRoutes(appServer *AppServer) *gin.Engine {
 	read := router.Group("/api/v1", scopeMiddleware(cfg, scopeRead), serial)
 	{
 		read.GET("/login/status", appServer.checkLoginStatusHandler)
+		read.GET("/access/probe", appServer.accessProbeHandler)
 		read.POST("/feeds/search", appServer.searchFeedsHandler)
 		read.POST("/feeds/detail", appServer.getFeedDetailHandler)
 		read.POST("/user/profile", appServer.userProfileHandler)
