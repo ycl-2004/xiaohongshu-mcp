@@ -65,6 +65,7 @@ func setupRoutes(appServer *AppServer) *gin.Engine {
 		write.POST("/publish", appServer.publishHandler)
 		write.POST("/feeds/comment", appServer.postCommentHandler)
 		write.POST("/feeds/comment/reply", appServer.replyCommentHandler)
+		write.POST("/feeds/comment/delete", appServer.deleteCommentHandler)
 	}
 
 	return router
