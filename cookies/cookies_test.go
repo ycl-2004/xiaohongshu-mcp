@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/xpzouying/xiaohongshu-mcp/site"
 )
 
 // TestGetCookiesFilePath 校验路径：COOKIES_PATH 优先，否则当前目录；不再回落到共享的 /tmp。
@@ -157,4 +158,68 @@ func TestSaveCookies_CreatesParentDir(t *testing.T) {
 	var cks []map[string]string
 	assert.NoError(t, json.Unmarshal(got, &cks))
 	assert.Equal(t, "a", cks[0]["name"])
+}
+
+// useSite 测试里切换站点，结束时恢复成中文站。
+func useSite(t *testing.T, s site.Site) {
+	site.Set(s)
+	t.Cleanup(func() { site.Set(site.CN) })
+}
+
+// TestSiteTagging 中文站和海外站是两套登录状态：会话文件记下站点，另一个站点的会话不加载、不覆盖。
+func TestSiteTagging(t *testing.T) {
+	t.Run("写入时记下当前站点", func(t *testing.T) {
+		useSite(t, site.Rednote)
+		path := filepath.Join(t.TempDir(), "cookies.json")
+		assert.NoError(t, NewLoadCookie(path).SaveCookies([]byte(`[{"name":"web_session"}]`)))
+
+		var f sessionFile
+		data, _ := os.ReadFile(path)
+		assert.NoError(t, json.Unmarshal(data, &f))
+		assert.Equal(t, "rednote", f.Site)
+	})
+
+	t.Run("另一个站点的会话拒绝加载，seed 也不沿用", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "cookies.json")
+		useSite(t, site.Rednote)
+		c := NewLoadCookie(path)
+		assert.NoError(t, c.SaveCookies([]byte(`[{"name":"web_session"}]`)))
+		assert.NoError(t, c.SaveSeed(42))
+
+		site.Set(site.CN)
+		_, err := c.LoadCookies()
+		assert.ErrorIs(t, err, ErrSiteMismatch)
+		assert.Equal(t, 0, c.LoadSeed())
+	})
+
+	t.Run("另一个站点的会话不被覆盖", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "cookies.json")
+		useSite(t, site.Rednote)
+		assert.NoError(t, NewLoadCookie(path).SaveCookies([]byte(`[{"name":"web_session"}]`)))
+		before, _ := os.ReadFile(path)
+
+		site.Set(site.CN)
+		assert.ErrorIs(t, NewLoadCookie(path).SaveCookies([]byte(`[]`)), ErrSiteMismatch)
+		assert.ErrorIs(t, NewLoadCookie(path).SaveSeed(7), ErrSiteMismatch)
+		after, _ := os.ReadFile(path)
+		assert.Equal(t, before, after)
+	})
+
+	t.Run("没有站点字段的老文件是中文站", func(t *testing.T) {
+		dir := t.TempDir()
+		v1 := filepath.Join(dir, "v1.json")
+		v2 := filepath.Join(dir, "v2.json")
+		assert.NoError(t, os.WriteFile(v1, []byte(`[{"name":"a"}]`), 0600))
+		assert.NoError(t, os.WriteFile(v2, []byte(`{"version":2,"seed":9,"cookies":[{"name":"a"}]}`), 0600))
+
+		for _, p := range []string{v1, v2} {
+			_, err := NewLoadCookie(p).LoadCookies()
+			assert.NoError(t, err, p)
+		}
+		useSite(t, site.Rednote)
+		for _, p := range []string{v1, v2} {
+			_, err := NewLoadCookie(p).LoadCookies()
+			assert.ErrorIs(t, err, ErrSiteMismatch, p)
+		}
+	})
 }

@@ -2,20 +2,53 @@ package cookies
 
 import (
 	"encoding/json"
+	stderrors "errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/xpzouying/xiaohongshu-mcp/site"
 )
 
 // sessionFile 是 v2 的文件结构。v1 是一个裸 cookie 数组，没有外层对象。
 // cookies 用 RawMessage 原样透传，不解析不重组，避免往返时字段走样。
 type sessionFile struct {
 	Version int             `json:"version"`
+	Site    string          `json:"site,omitempty"` // 会话属于哪个站点；没有这个字段的老文件都是中文站
 	Seed    int             `json:"seed,omitempty"`
 	SavedAt string          `json:"saved_at,omitempty"`
 	Cookies json.RawMessage `json:"cookies"`
+}
+
+// ErrSiteMismatch 会话文件属于另一个站点。中文站和海外站是两套登录状态，不能混用。
+// Added in ycl-2004/xiaohongshu-mcp; see NOTICE.
+var ErrSiteMismatch = stderrors.New("会话文件属于另一个站点")
+
+// siteOf 会话文件属于哪个站点；不是能认出的会话格式时 known 为 false。
+func siteOf(data []byte) (name string, known bool) {
+	var f sessionFile
+	if err := json.Unmarshal(data, &f); err == nil {
+		if f.Site == "" {
+			return site.CN.Name, true
+		}
+		return f.Site, true
+	}
+	var v1 []json.RawMessage
+	if err := json.Unmarshal(data, &v1); err == nil {
+		return site.CN.Name, true
+	}
+	return "", false
+}
+
+// checkSite 会话文件不属于当前站点时返回 ErrSiteMismatch。
+func checkSite(data []byte) error {
+	name, known := siteOf(data)
+	if known && name != site.Current().Name {
+		return fmt.Errorf("%w：文件是 %s 的，当前站点是 %s", ErrSiteMismatch, name, site.Current().Name)
+	}
+	return nil
 }
 
 // localCookiesPath 当前目录下的默认文件名。
@@ -53,6 +86,9 @@ func (c *localCookie) LoadCookies() ([]byte, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to read cookies from tmp file")
 	}
+	if err := checkSite(data); err != nil {
+		return nil, err
+	}
 
 	var f sessionFile
 	if err := json.Unmarshal(data, &f); err == nil && len(f.Cookies) > 0 {
@@ -62,10 +98,10 @@ func (c *localCookie) LoadCookies() ([]byte, error) {
 	return data, nil
 }
 
-// LoadSeed 读取会话绑定的 seed。老格式（裸数组）没有这个值，返回 0。
+// LoadSeed 读取会话绑定的 seed。老格式（裸数组）没有这个值，返回 0；另一个站点的会话也返回 0。
 func (c *localCookie) LoadSeed() int {
 	data, err := os.ReadFile(c.path)
-	if err != nil {
+	if err != nil || checkSite(data) != nil {
 		return 0
 	}
 
@@ -90,14 +126,21 @@ func (c *localCookie) SaveSeed(seed int) error {
 	return c.write(cks, seed)
 }
 
-// write 以 v2 格式落盘。cookies 用 RawMessage 原样嵌入，不经过结构体往返。
+// write 以 v2 格式落盘，记下当前站点。cookies 用 RawMessage 原样嵌入，不经过结构体往返。
+// 已有的文件属于另一个站点时拒绝写，不覆盖别的站点的会话。
 func (c *localCookie) write(cks []byte, seed int) error {
+	if existing, err := os.ReadFile(c.path); err == nil {
+		if err := checkSite(existing); err != nil {
+			return err
+		}
+	}
 	if len(cks) == 0 {
 		cks = []byte("[]")
 	}
 
 	data, err := json.MarshalIndent(sessionFile{
 		Version: 2,
+		Site:    site.Current().Name,
 		Seed:    seed,
 		SavedAt: time.Now().Format(time.RFC3339),
 		Cookies: json.RawMessage(cks),

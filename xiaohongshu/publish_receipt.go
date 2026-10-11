@@ -218,7 +218,7 @@ func latestNote(ctx context.Context, page *rod.Page) (id, title string, err erro
 		return "", "", err
 	}
 	defer capture.close()
-	if err := page.Context(ctx).Navigate(urlOfCreatorHome); err != nil {
+	if err := page.Context(ctx).Navigate(urlOfCreatorHome()); err != nil {
 		return "", "", errors.Wrap(err, "打开创作中心首页失败")
 	}
 	raw, err := capture.wait(ctx, latestNotePath, 0, 20*time.Second)

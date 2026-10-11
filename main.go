@@ -3,6 +3,7 @@ package main
 // Modified for ycl-2004/xiaohongshu-mcp; see NOTICE.
 
 import (
+	"errors"
 	"flag"
 	"os"
 	"time"
@@ -44,6 +45,15 @@ func main() {
 		logrus.Fatalf("%v", err)
 	}
 	if err := validateListen(port); err != nil {
+		logrus.Fatalf("%v", err)
+	}
+	// 站点要在读会话文件之前定下来：不同站点的会话拒绝加载。
+	s, err := configs.UseSiteFromEnv()
+	if err != nil {
+		logrus.Fatalf("%v", err)
+	}
+	logrus.Infof("site: %s (%s)", s.Name, s.Domain)
+	if _, err := cookies.NewLoadCookie(cookies.GetCookiesFilePath()).LoadCookies(); errors.Is(err, cookies.ErrSiteMismatch) {
 		logrus.Fatalf("%v", err)
 	}
 

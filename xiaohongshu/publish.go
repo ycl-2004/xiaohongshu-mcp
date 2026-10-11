@@ -15,6 +15,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/xpzouying/xiaohongshu-mcp/humanize"
+	"github.com/xpzouying/xiaohongshu-mcp/site"
 )
 
 // PublishImageContent 发布图文内容
@@ -38,8 +39,6 @@ type PublishAction struct {
 }
 
 const (
-	urlOfPublic = `https://creator.xiaohongshu.com/publish/publish?source=official`
-
 	// contentElemTimeout 查找正文输入框的轮询窗口
 	contentElemTimeout = 10 * time.Second
 )
@@ -52,7 +51,7 @@ func NewPublishImageAction(page *rod.Page) (*PublishAction, error) {
 		return nil, err
 	}
 
-	if err := pp.Navigate(urlOfPublic); err != nil {
+	if err := pp.Navigate(urlOfPublic()); err != nil {
 		return nil, errors.Wrap(err, "导航到发布页面失败")
 	}
 
@@ -1419,3 +1418,6 @@ func waitForModalClose(page *rod.Page) error {
 
 	return errors.New("等待弹窗关闭超时")
 }
+
+// urlOfPublic 当前站点创作中心的发布页。
+func urlOfPublic() string { return site.Current().CreatorURL("/publish/publish?source=official") }

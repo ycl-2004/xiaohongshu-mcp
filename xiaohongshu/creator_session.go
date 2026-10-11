@@ -6,12 +6,10 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/pkg/errors"
 	"github.com/xpzouying/xiaohongshu-mcp/humanize"
+	"github.com/xpzouying/xiaohongshu-mcp/site"
 )
 
 const (
-	urlOfCreatorHome = `https://creator.xiaohongshu.com/?source=official`
-
-	creatorSessionCookie  = "galaxy_creator_session_id"
 	creatorSessionTimeout = 15 * time.Second
 )
 
@@ -21,7 +19,7 @@ func ensureCreatorSession(page *rod.Page) error {
 		return nil
 	}
 
-	if err := page.Navigate(urlOfCreatorHome); err != nil {
+	if err := page.Navigate(urlOfCreatorHome()); err != nil {
 		return errors.Wrap(err, "打开创作者中心失败")
 	}
 
@@ -42,9 +40,12 @@ func hasCreatorSession(page *rod.Page) bool {
 		return false
 	}
 	for _, c := range cks {
-		if c.Name == creatorSessionCookie {
+		if c.Name == site.Current().CreatorSessionCookie {
 			return true
 		}
 	}
 	return false
 }
+
+// urlOfCreatorHome 当前站点的创作中心首页。
+func urlOfCreatorHome() string { return site.Current().CreatorURL("/?source=official") }

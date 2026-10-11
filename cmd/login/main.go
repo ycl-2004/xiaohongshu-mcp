@@ -16,6 +16,13 @@ import (
 func main() {
 	flag.Parse()
 
+	// 站点决定登录哪个网站、会话文件标记成哪个站点。
+	s, err := configs.UseSiteFromEnv()
+	if err != nil {
+		logrus.Fatalf("%v", err)
+	}
+	logrus.Infof("site: %s (%s)", s.Name, s.Domain)
+
 	// 登录的时候，需要界面，所以不能无头模式。
 	// 登录与后续运行共用同一个 seed：首次登录生成并写入会话文件，之后一直复用。
 	store := cookies.NewLoadCookie(cookies.GetCookiesFilePath())
