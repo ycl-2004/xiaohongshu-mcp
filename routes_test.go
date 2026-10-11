@@ -123,6 +123,7 @@ func TestRegisteredRoutes(t *testing.T) {
 		"POST /api/v1/chat/messages",
 		"POST /api/v1/feeds/comment/thread",
 		"POST /api/v1/publish",
+		"POST /api/v1/publish/inspect",
 		"POST /api/v1/feeds/comment",
 		"POST /api/v1/feeds/comment/reply",
 		"POST /api/v1/feeds/comment/delete",
@@ -165,6 +166,8 @@ func TestRouteScopes(t *testing.T) {
 		{"评论缺幂等 key 被参数校验拦下", http.MethodPost, "/api/v1/feeds/comment", write, http.StatusBadRequest},
 		{"回复拒绝读 token", http.MethodPost, "/api/v1/feeds/comment/reply", read, http.StatusForbidden},
 		{"发布拒绝读 token", http.MethodPost, "/api/v1/publish", read, http.StatusForbidden},
+		{"发布页探查会上传图片，拒绝读 token", http.MethodPost, "/api/v1/publish/inspect", read, http.StatusForbidden},
+		{"发布页探查缺图片被参数校验拦下", http.MethodPost, "/api/v1/publish/inspect", write, http.StatusBadRequest},
 		{"MCP 拒绝读 token", http.MethodPost, "/mcp", read, http.StatusForbidden},
 		{"没有 CORS 预检", http.MethodOptions, "/api/v1/feeds/detail", "", http.StatusNotFound},
 	}

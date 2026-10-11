@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/go-rod/rod"
@@ -38,6 +39,10 @@ type PublishRequest struct {
 	IsOriginal bool     `json:"is_original,omitempty"` // 是否声明原创
 	Visibility string   `json:"visibility,omitempty"`  // 可见范围: "公开可见"(默认), "仅自己可见", "仅互关好友可见"
 	Products   []string `json:"products,omitempty"`    // 商品关键词列表，用于绑定带货商品
+	// Modified for ycl-2004/xiaohongshu-mcp：内容类型声明（xiaohongshu.ContentTypes 里的一项，例如「笔记含AI合成内容」）；
+	// 幂等 key：给了就按发布回包确认、记回执（同评论），同一 key 最多提交一次。
+	ContentType    string `json:"content_type,omitempty"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
 // LoginStatusResponse 登录状态响应
@@ -56,10 +61,11 @@ type LoginQrcodeResponse struct {
 
 // PublishResponse 发布响应
 type PublishResponse struct {
-	Title   string `json:"title"`
-	Content string `json:"content"`
-	Images  int    `json:"images"`
-	Status  string `json:"status"`
+	Title   string                          `json:"title"`
+	Content string                          `json:"content"`
+	Images  int                             `json:"images"`
+	Status  string                          `json:"status"`
+	Receipt *xiaohongshu.InteractionReceipt `json:"receipt,omitempty"` // 带幂等 key 时才有：笔记 id 在 note_id
 }
 
 // PublishVideoRequest 发布视频请求（仅支持本地单个视频文件）
@@ -207,6 +213,17 @@ func (s *XiaohongshuService) PublishContent(ctx context.Context, req *PublishReq
 	if xhsutil.CalcTitleLength(req.Title) > 20 {
 		return nil, fmt.Errorf("标题长度超过限制")
 	}
+	if req.ContentType != "" && !slices.Contains(xiaohongshu.ContentTypes, req.ContentType) {
+		return nil, fmt.Errorf("不支持的内容类型声明 %q，可选：%v", req.ContentType, xiaohongshu.ContentTypes)
+	}
+	if req.IdempotencyKey != "" {
+		if replay, err := xiaohongshu.ReplayOrRefuse(req.IdempotencyKey); err != nil || replay != nil {
+			if err != nil {
+				return nil, err
+			}
+			return &PublishResponse{Title: req.Title, Status: "同一幂等 key 已发布成功，返回原回执", Receipt: replay}, nil
+		}
+	}
 
 	imagePaths, err := s.processImages(req.Images)
 	if err != nil {
@@ -239,17 +256,20 @@ func (s *XiaohongshuService) PublishContent(ctx context.Context, req *PublishReq
 	}
 
 	content := xiaohongshu.PublishImageContent{
-		Title:        req.Title,
-		Content:      req.Content,
-		Tags:         req.Tags,
-		ImagePaths:   imagePaths,
-		ScheduleTime: scheduleTime,
-		IsOriginal:   req.IsOriginal,
-		Visibility:   req.Visibility,
-		Products:     req.Products,
+		Title:          req.Title,
+		Content:        req.Content,
+		Tags:           req.Tags,
+		ImagePaths:     imagePaths,
+		ScheduleTime:   scheduleTime,
+		IsOriginal:     req.IsOriginal,
+		Visibility:     req.Visibility,
+		Products:       req.Products,
+		ContentType:    req.ContentType,
+		IdempotencyKey: req.IdempotencyKey,
 	}
 
-	if err := s.publishContent(ctx, content); err != nil {
+	receipt, err := s.publishContent(ctx, content)
+	if err != nil {
 		logrus.Errorf("发布内容失败: title=%s %v", content.Title, err)
 		return nil, err
 	}
@@ -259,6 +279,7 @@ func (s *XiaohongshuService) PublishContent(ctx context.Context, req *PublishReq
 		Content: req.Content,
 		Images:  len(imagePaths),
 		Status:  "发布完成",
+		Receipt: receipt,
 	}
 
 	return response, nil
@@ -271,7 +292,7 @@ func (s *XiaohongshuService) processImages(images []string) ([]string, error) {
 }
 
 // publishContent 执行内容发布
-func (s *XiaohongshuService) publishContent(ctx context.Context, content xiaohongshu.PublishImageContent) error {
+func (s *XiaohongshuService) publishContent(ctx context.Context, content xiaohongshu.PublishImageContent) (*xiaohongshu.InteractionReceipt, error) {
 	b := newBrowser()
 	defer b.Close()
 
@@ -280,7 +301,7 @@ func (s *XiaohongshuService) publishContent(ctx context.Context, content xiaohon
 
 	action, err := xiaohongshu.NewPublishImageAction(page)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	return action.Publish(ctx, content)

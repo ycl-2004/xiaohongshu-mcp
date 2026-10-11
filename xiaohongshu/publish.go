@@ -27,6 +27,10 @@ type PublishImageContent struct {
 	IsOriginal   bool       // 是否声明原创
 	Visibility   string     // 可见范围: "公开可见"(默认), "仅自己可见", "仅互关好友可见"
 	Products     []string   // 商品关键词列表，用于绑定带货商品
+	// Modified for ycl-2004/xiaohongshu-mcp：内容类型声明（ContentTypes 里的一项，空 = 不声明）；
+	// 幂等 key（空 = 上游原来的做法，不记回执）。
+	ContentType    string
+	IdempotencyKey string
 }
 
 type PublishAction struct {
@@ -74,31 +78,31 @@ func NewPublishImageAction(page *rod.Page) (*PublishAction, error) {
 	}, nil
 }
 
-func (p *PublishAction) Publish(ctx context.Context, content PublishImageContent) error {
+// Publish 发一篇图文。带幂等 key 时返回回执（笔记 id 在 NoteID）；不带时回执为 nil。
+func (p *PublishAction) Publish(ctx context.Context, content PublishImageContent) (*InteractionReceipt, error) {
 	if len(content.ImagePaths) == 0 {
-		return errors.New("图片不能为空")
+		return nil, errors.New("图片不能为空")
 	}
 
 	// 重设超时：.Context(ctx) 会替换掉 NewPublishImageAction 里 Timeout(300s) 的 deadline
 	page := p.page.Context(ctx).Timeout(300 * time.Second)
 
 	if err := uploadImages(page, content.ImagePaths); err != nil {
-		return errors.Wrap(err, "小红书上传图片失败")
+		return nil, errors.Wrap(err, "小红书上传图片失败")
 	}
 
-	tags := content.Tags
-	if len(tags) >= 10 {
+	if len(content.Tags) >= 10 {
 		logrus.Warnf("标签数量超过10，截取前10个标签")
-		tags = tags[:10]
+		content.Tags = content.Tags[:10]
 	}
 
-	logrus.Infof("发布内容: title=%s, images=%v, tags=%v, schedule=%v, original=%v, visibility=%s, products=%v", content.Title, len(content.ImagePaths), tags, content.ScheduleTime, content.IsOriginal, content.Visibility, content.Products)
+	logrus.Infof("发布内容: title=%s, images=%v, tags=%v, schedule=%v, original=%v, visibility=%s, content_type=%s, products=%v", content.Title, len(content.ImagePaths), content.Tags, content.ScheduleTime, content.IsOriginal, content.Visibility, content.ContentType, content.Products)
 
-	if err := submitPublish(ctx, page, content.Title, content.Content, tags, content.ScheduleTime, content.IsOriginal, content.Visibility, content.Products); err != nil {
-		return errors.Wrap(err, "小红书发布失败")
+	receipt, err := submitPublish(ctx, page, content)
+	if err != nil {
+		return receipt, errors.Wrap(err, "小红书发布失败")
 	}
-
-	return nil
+	return receipt, nil
 }
 
 // hasPopCover 当前页面是否还有挡人的浮层。
@@ -345,18 +349,19 @@ func waitForUploadComplete(page *rod.Page, expectedCount int) error {
 	return errors.Errorf("第%d张图片上传超时(60s)，请检查网络连接和图片大小", expectedCount)
 }
 
-func submitPublish(ctx context.Context, page *rod.Page, title, content string, tags []string, scheduleTime *time.Time, isOriginal bool, visibility string, products []string) error {
+func submitPublish(ctx context.Context, page *rod.Page, post PublishImageContent) (*InteractionReceipt, error) {
+	title, content, tags, scheduleTime, isOriginal, products := post.Title, post.Content, post.Tags, post.ScheduleTime, post.IsOriginal, post.Products
 	titleElem, err := page.Element("div.d-input input")
 	if err != nil {
-		return errors.Wrap(err, "查找标题输入框失败")
+		return nil, errors.Wrap(err, "查找标题输入框失败")
 	}
 	if err := humanize.Type(ctx, titleElem, title); err != nil {
-		return errors.Wrap(err, "输入标题失败")
+		return nil, errors.Wrap(err, "输入标题失败")
 	}
 
 	humanize.Delay(ctx, humanize.AfterType)
 	if err := checkTitleMaxLength(page); err != nil {
-		return err
+		return nil, err
 	}
 	slog.Info("检查标题长度：通过")
 
@@ -364,56 +369,67 @@ func submitPublish(ctx context.Context, page *rod.Page, title, content string, t
 
 	contentElem, err := getContentElement(page, contentElemTimeout)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := humanize.Type(ctx, contentElem, content); err != nil {
-		return errors.Wrap(err, "输入正文失败")
+		return nil, errors.Wrap(err, "输入正文失败")
 	}
 	closeFeatureGuide(page)
 	if err := waitAndClickTitleInput(titleElem); err != nil {
-		return err
+		return nil, err
 	}
 	if err := inputTags(ctx, contentElem, tags); err != nil {
-		return err
+		return nil, err
 	}
 
 	humanize.Delay(ctx, humanize.AfterType)
 
 	if err := checkContentMaxLength(page); err != nil {
-		return err
+		return nil, err
 	}
 	slog.Info("检查正文长度：通过")
 
 	if scheduleTime != nil {
 		if err := setSchedulePublish(ctx, page, *scheduleTime); err != nil {
-			return errors.Wrap(err, "设置定时发布失败")
+			return nil, errors.Wrap(err, "设置定时发布失败")
 		}
 		slog.Info("定时发布设置完成", "schedule_time", scheduleTime.Format("2006-01-02 15:04"))
 	}
 
-	if err := setVisibility(page, visibility); err != nil {
-		return errors.Wrap(err, "设置可见范围失败")
+	if err := selectVisibility(page, post.Visibility); err != nil { // 选完回读：没选上就不发
+		return nil, errors.Wrap(err, "设置可见范围失败")
+	}
+
+	// 内容类型声明（Modified for ycl-2004/xiaohongshu-mcp）：请求了就必须选上，选不上不发
+	if post.ContentType != "" {
+		if err := setContentType(page, post.ContentType); err != nil {
+			return nil, errors.Wrap(err, "设置内容类型声明失败")
+		}
 	}
 
 	// 处理原创声明：显式请求了原创但设置失败 → 报错中止，不静默发成非原创（避免"以为原创其实不是"）
 	if isOriginal {
 		if err := setOriginal(page); err != nil {
-			return errors.Wrap(err, "设置原创声明失败（已请求原创，中止发布）")
+			return nil, errors.Wrap(err, "设置原创声明失败（已请求原创，中止发布）")
 		}
 		slog.Info("已声明原创")
 	}
 
 	if err := bindProducts(ctx, page, products); err != nil {
-		return errors.Wrap(err, "绑定商品失败")
+		return nil, errors.Wrap(err, "绑定商品失败")
+	}
+
+	if post.IdempotencyKey != "" { // 带幂等 key：按发布回包确认、记回执（见 publish_receipt.go）
+		return publishWithReceipt(ctx, page, post.IdempotencyKey, title)
 	}
 
 	if err := clickPublishButton(page); err != nil {
-		return err
+		return nil, err
 	}
 
 	// 校验发布真的成功：成功后创作平台会跳转离开发布页；未跳转则判定失败，
 	// 消除"点了发布按钮就算成功"的假阳性。
-	return waitPublishSuccess(page, 15*time.Second)
+	return nil, waitPublishSuccess(page, 15*time.Second)
 }
 
 // waitPublishSuccess 轮询等待发布成功的信号：小红书发布成功后会跳转离开发布表单页

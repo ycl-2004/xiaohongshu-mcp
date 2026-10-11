@@ -65,6 +65,7 @@ func setupRoutes(appServer *AppServer) *gin.Engine {
 	write := router.Group("/api/v1", scopeMiddleware(cfg, scopeWrite), serial)
 	{
 		write.POST("/publish", appServer.publishHandler)
+		write.POST("/publish/inspect", appServer.publishInspectHandler)
 		write.POST("/feeds/comment", appServer.postCommentHandler)
 		write.POST("/feeds/comment/reply", appServer.replyCommentHandler)
 		write.POST("/feeds/comment/delete", appServer.deleteCommentHandler)
