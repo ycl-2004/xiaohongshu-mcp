@@ -3,10 +3,13 @@ package xiaohongshu
 import (
 	"context"
 	"encoding/json"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-rod/rod"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 	"github.com/xpzouying/xiaohongshu-mcp/site"
 )
 
@@ -111,20 +114,65 @@ func (a *LoginAction) FetchQrcodeImage(ctx context.Context) (string, bool, error
 	return *src, false, nil
 }
 
+// WaitForLogin 等扫码登上：页面出现登录后的用户入口就算。
+//
+// 海外站实测过「手机显示登录成功、网页不跟进」（2026-10-11）：会话 cookie 已经换了，页面没刷新。
+// 所以另外盯着会话 cookie，变了之后页面还是没跟进，就刷新一次再看。只在 cookie 变了之后刷新：
+// 提前刷新会换掉用户手里那张二维码。Modified for ycl-2004/xiaohongshu-mcp; see NOTICE.
 func (a *LoginAction) WaitForLogin(ctx context.Context) bool {
 	pp := a.page.Context(ctx)
+	before := sessionCookies(pp)
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
+	var changedAt time.Time
+	reloaded := false
 	for {
 		select {
 		case <-ctx.Done():
 			return false
 		case <-ticker.C:
-			el, err := pp.Element(".main-container .user .link-wrapper .channel")
-			if err == nil && el != nil {
+			if has, _, err := pp.Has(".main-container .user .link-wrapper .channel"); err == nil && has {
 				return true
+			}
+			if reloaded {
+				continue
+			}
+			if changedAt.IsZero() {
+				if now := sessionCookies(pp); now != "" && now != before {
+					changedAt = time.Now()
+				}
+				continue
+			}
+			if time.Since(changedAt) > followGrace {
+				logrus.Info("会话 cookie 已经换了、页面没跟进：刷新一次确认登录")
+				reloaded = true
+				if err := pp.Reload(); err == nil {
+					_ = pp.WaitLoad()
+				}
 			}
 		}
 	}
+}
+
+// followGrace 会话 cookie 变了之后，给页面自己跟进的时间；过了还没跟进才刷新。
+const followGrace = 3 * time.Second
+
+// sessionCookieNames 登录后会换成新值的会话 cookie：中文站 web_session，海外站 id_token。
+var sessionCookieNames = map[string]bool{"web_session": true, "id_token": true}
+
+// sessionCookies 当前页面的会话 cookie，名字和值拼成一串，只用来比较有没有变（不记日志）。
+func sessionCookies(page *rod.Page) string {
+	cookies, err := page.Cookies(nil)
+	if err != nil {
+		return ""
+	}
+	var parts []string
+	for _, c := range cookies {
+		if sessionCookieNames[c.Name] {
+			parts = append(parts, c.Name+"="+c.Value)
+		}
+	}
+	slices.Sort(parts)
+	return strings.Join(parts, ";")
 }

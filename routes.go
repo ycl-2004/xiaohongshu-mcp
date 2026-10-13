@@ -71,6 +71,10 @@ func setupRoutes(appServer *AppServer) *gin.Engine {
 		write.POST("/feeds/comment/delete", appServer.deleteCommentHandler)
 		write.POST("/note/delete", appServer.deleteNoteHandler)
 		write.POST("/chat/reply", appServer.chatReplyHandler)
+		// 扫码登录：取二维码会留一个浏览器在后台等扫码、扫上就存 cookie，属于改账号状态的操作，走写 token。
+		// 状态查询只读内存，但和取二维码是一对，也放在写 token 下。Modified for ycl-2004/xiaohongshu-mcp.
+		write.GET("/login/qrcode", appServer.getLoginQrcodeHandler)
+		write.GET("/login/qrcode/state", appServer.loginQrcodeStateHandler)
 	}
 
 	return router

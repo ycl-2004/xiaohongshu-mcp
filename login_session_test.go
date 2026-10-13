@@ -33,7 +33,7 @@ func TestLoginSessions(t *testing.T) {
 		closed := 0
 
 		seq := l.start(func() { closed++ })
-		l.finish(seq)
+		l.finish(seq, loginStateExpired)
 
 		l.start(func() {})
 		assert.Equal(t, 0, closed, "已结束的会话不该再被关闭")
@@ -47,11 +47,28 @@ func TestLoginSessions(t *testing.T) {
 		l.start(func() { newClosed++ }) // 新会话上位
 
 		// 旧会话此时才走完收尾，它必须认出自己已不是当前会话
-		l.finish(oldSeq)
+		l.finish(oldSeq, loginStateExpired)
+		_, state := l.snapshot()
+		assert.Equal(t, loginStateWaiting, state, "旧会话的结果不该盖掉新会话的等扫码")
 
 		// 再开一个：如果上一步误清了登记，新会话就永远关不掉了
 		l.start(func() {})
 		assert.Equal(t, 1, newClosed, "新会话仍应被后来者关闭")
+	})
+
+	t.Run("状态：没取过、等扫码、扫上了", func(t *testing.T) {
+		var l loginSessions
+		_, state := l.snapshot()
+		assert.Equal(t, loginStateNone, state)
+
+		seq := l.start(func() {})
+		_, state = l.snapshot()
+		assert.Equal(t, loginStateWaiting, state)
+
+		l.finish(seq, loginStateSuccess)
+		got, state := l.snapshot()
+		assert.Equal(t, seq, got)
+		assert.Equal(t, loginStateSuccess, state)
 	})
 
 	t.Run("并发开会话时每个序号唯一", func(t *testing.T) {

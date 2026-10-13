@@ -76,6 +76,12 @@ func (s *AppServer) getLoginQrcodeHandler(c *gin.Context) {
 	respondSuccess(c, result, "获取登录二维码成功")
 }
 
+// loginQrcodeStateHandler 处理 [GET /api/v1/login/qrcode/state]：最近一次扫码会话的状态，不开浏览器。
+// Added in ycl-2004/xiaohongshu-mcp; see NOTICE.
+func (s *AppServer) loginQrcodeStateHandler(c *gin.Context) {
+	respondSuccess(c, s.xiaohongshuService.LoginQrcodeState(), "读取扫码会话状态成功")
+}
+
 // deleteCookiesHandler 删除 cookies，重置登录状态
 func (s *AppServer) deleteCookiesHandler(c *gin.Context) {
 	err := s.xiaohongshuService.DeleteCookies(c.Request.Context())

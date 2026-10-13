@@ -57,6 +57,14 @@ type LoginQrcodeResponse struct {
 	Timeout    string `json:"timeout"`
 	IsLoggedIn bool   `json:"is_logged_in"`
 	Img        string `json:"img,omitempty"`
+	Session    uint64 `json:"session,omitempty"` // 这次扫码会话的序号，配合 /login/qrcode/state 看结果
+}
+
+// LoginQrcodeStateResponse 最近一次扫码会话的状态（none / waiting / success / expired / failed）。
+// Added in ycl-2004/xiaohongshu-mcp; see NOTICE.
+type LoginQrcodeStateResponse struct {
+	Session uint64 `json:"session"`
+	State   string `json:"state"`
 }
 
 // PublishResponse 发布响应
@@ -163,8 +171,9 @@ func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context) (*LoginQrcodeRe
 
 	timeout := 4 * time.Minute
 
+	var session uint64
 	if !loggedIn {
-		s.waitScanInBackground(loginAction, page, deferFunc, timeout)
+		session = s.waitScanInBackground(loginAction, page, deferFunc, timeout)
 	}
 
 	return &LoginQrcodeResponse{
@@ -176,7 +185,14 @@ func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context) (*LoginQrcodeRe
 		}(),
 		Img:        img,
 		IsLoggedIn: loggedIn,
+		Session:    session,
 	}, nil
+}
+
+// LoginQrcodeState 最近一次扫码会话的状态：只读内存里的登记，不开浏览器。
+func (s *XiaohongshuService) LoginQrcodeState() *LoginQrcodeStateResponse {
+	session, state := s.logins.snapshot()
+	return &LoginQrcodeStateResponse{Session: session, State: state}
 }
 
 // waitScanInBackground 在后台等用户扫码，扫上了就存 cookie。
@@ -185,21 +201,24 @@ func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context) (*LoginQrcodeRe
 // 再取一次二维码就会把上一个还在等的会话关掉，同一时刻只留一个。
 func (s *XiaohongshuService) waitScanInBackground(
 	loginAction *xiaohongshu.LoginAction, page *rod.Page, closeBrowser func(), timeout time.Duration,
-) {
+) uint64 {
 	ctxTimeout, cancel := context.WithTimeout(context.Background(), timeout)
 	seq := s.logins.start(cancel)
 	logrus.Infof("等待扫码登录，会话 #%d，超时 %s", seq, timeout)
 
 	go func() {
+		state := loginStateExpired
 		defer closeBrowser()
 		defer cancel()
-		defer s.logins.finish(seq)
+		defer func() { s.logins.finish(seq, state) }()
 
 		if loginAction.WaitForLogin(ctxTimeout) {
 			if err := saveCookies(page); err != nil {
+				state = loginStateFailed
 				logrus.Errorf("扫码成功但保存 cookies 失败，会话 #%d: %v", seq, err)
 				return
 			}
+			state = loginStateSuccess
 			logrus.Infof("扫码登录成功，cookies 已保存，会话 #%d", seq)
 			return
 		}
@@ -207,6 +226,7 @@ func (s *XiaohongshuService) waitScanInBackground(
 		// 没等到扫码：要么超时，要么被新取的二维码取代
 		logrus.Infof("登录会话 #%d 结束，未检测到扫码（超时或已被新的二维码取代）", seq)
 	}()
+	return seq
 }
 
 // PublishContent 发布内容
