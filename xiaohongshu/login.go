@@ -10,6 +10,7 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+	"github.com/xpzouying/xiaohongshu-mcp/humanize"
 	"github.com/xpzouying/xiaohongshu-mcp/site"
 )
 
@@ -103,7 +104,22 @@ func (a *LoginAction) FetchQrcodeImage(ctx context.Context) (string, bool, error
 		return "", true, nil
 	}
 
-	src, err := pp.MustElement(".login-container .qrcode-img").Attribute("src")
+	// 中文站没登录时自动弹出登录框；海外站不弹，要先点侧栏的「登录」（2026-10-13 实测）。
+	// 页面上另有一个「下载 App」的二维码，所以只认登录框里的。Modified for ycl-2004/xiaohongshu-mcp; see NOTICE.
+	if has, _, _ := pp.Has(".login-container .qrcode-img"); !has {
+		button, err := pp.Timeout(qrcodeTimeout).Element("button.login-btn")
+		if err != nil {
+			return "", false, errors.Wrap(err, "没有登录框，也找不到「登录」按钮")
+		}
+		if err := humanize.Click(button); err != nil {
+			return "", false, errors.Wrap(err, "点「登录」失败")
+		}
+	}
+	img, err := pp.Timeout(qrcodeTimeout).Element(".login-container .qrcode-img")
+	if err != nil {
+		return "", false, errors.Wrap(err, "登录框里没有二维码")
+	}
+	src, err := img.Attribute("src")
 	if err != nil {
 		return "", false, errors.Wrap(err, "get qrcode src failed")
 	}
@@ -154,6 +170,9 @@ func (a *LoginAction) WaitForLogin(ctx context.Context) bool {
 		}
 	}
 }
+
+// qrcodeTimeout 等登录框和二维码出现的上限：原来没有上限，选择器对不上时请求会一直挂着。
+const qrcodeTimeout = 30 * time.Second
 
 // followGrace 会话 cookie 变了之后，给页面自己跟进的时间；过了还没跟进才刷新。
 const followGrace = 3 * time.Second
