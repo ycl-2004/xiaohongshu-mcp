@@ -85,3 +85,44 @@ func TestRespondInteractionError(t *testing.T) {
 		})
 	}
 }
+
+// TestAPublishThatFailsBeforeTheClickIsNotPublished 发笔记点「发布」之前失败（包括超时）一律是没发出、可以重试的
+// INTERACTION_NOT_SENT；被页面拦下用拦截码；点了发布之后超时仍是结果不明。
+func TestAPublishThatFailsBeforeTheClickIsNotPublished(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name   string
+		err    error
+		status int
+		code   string
+		state  string
+	}{
+		{"点发布前点不到声明（2026-10-20）", fmt.Errorf("设置内容类型声明失败: 点开内容类型声明失败: %w", context.DeadlineExceeded),
+			http.StatusBadGateway, "INTERACTION_NOT_SENT", xiaohongshu.StateNotSent},
+		{"点发布前没选上可见范围", errors.New("可见范围没有选上「仅自己可见」，没有发布"),
+			http.StatusBadGateway, "INTERACTION_NOT_SENT", xiaohongshu.StateNotSent},
+		{"点发布前遇到验证页", fmt.Errorf("上传图片: %w", &xiaohongshu.PageAccessError{Code: xiaohongshu.CodeSecurityVerification}),
+			http.StatusConflict, xiaohongshu.CodeSecurityVerification, xiaohongshu.StateNotSent},
+		{"点了发布之后超时", &xiaohongshu.InteractionError{Stage: "confirm", State: xiaohongshu.StateUnknown, Cause: context.DeadlineExceeded},
+			http.StatusBadGateway, "INTERACTION_UNKNOWN", xiaohongshu.StateUnknown},
+		{"同一 key 已有未确认的记录", &xiaohongshu.DuplicateError{Saved: xiaohongshu.InteractionReceipt{State: xiaohongshu.StateUnknown}},
+			http.StatusConflict, "DUPLICATE_OR_UNCERTAIN_COMMENT", xiaohongshu.StateUnknown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/publish", nil)
+			respondInteractionError(c, "发布失败", notPublished(tt.err))
+
+			assert.Equal(t, tt.status, recorder.Code)
+			var body struct {
+				Code    string       `json:"code"`
+				Details writeFailure `json:"details"`
+			}
+			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+			assert.Equal(t, tt.code, body.Code)
+			assert.Equal(t, tt.state, body.Details.State)
+		})
+	}
+}

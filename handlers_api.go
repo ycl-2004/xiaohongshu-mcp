@@ -161,7 +161,7 @@ func (s *AppServer) publishHandler(c *gin.Context) {
 
 	result, err := s.xiaohongshuService.PublishContent(c.Request.Context(), &req)
 	if err != nil && req.IdempotencyKey != "" { // 带幂等 key：同评论，失败带 details.state（发没发出）
-		respondInteractionError(c, "发布失败", err)
+		respondInteractionError(c, "发布失败", notPublished(err))
 		return
 	}
 	if err != nil {

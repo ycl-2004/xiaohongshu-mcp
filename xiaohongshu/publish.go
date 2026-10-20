@@ -686,15 +686,9 @@ func submitPublish(ctx context.Context, page *rod.Page, trace *publishTrace, pos
 		trace.Capture(page, "schedule_set")
 	}
 
-	if err := selectVisibility(page, post.Visibility); err != nil { // 选完回读：没选上就不发
-		return nil, errors.Wrap(err, "设置可见范围失败")
-	}
-
-	// 内容类型声明（Modified for ycl-2004/xiaohongshu-mcp）：请求了就必须选上，选不上不发
-	if post.ContentType != "" {
-		if err := setContentType(page, post.ContentType); err != nil {
-			return nil, errors.Wrap(err, "设置内容类型声明失败")
-		}
+	// 可见范围和内容类型声明（Modified for ycl-2004/xiaohongshu-mcp）：选完回读，没选上不发
+	if err := setNoteSettings(page, post.Visibility, post.ContentType); err != nil {
+		return nil, err
 	}
 	trace.Capture(page, "visibility_set")
 
@@ -1334,11 +1328,13 @@ func setVisibility(page *rod.Page, visibility string) error {
 		return errors.Errorf("不支持的可见范围: %s，支持: 公开可见、仅自己可见、仅互关好友可见", visibility)
 	}
 
-	dropdown, err := page.Element("div.permission-card-wrapper div.d-select-content")
+	// Modified for ycl-2004/xiaohongshu-mcp：同内容类型声明，先展开「内容设置」、滚到视口中间再点，找和点各有时限
+	expandContentSettings(page)
+	dropdown, err := page.Timeout(settingTimeout).Element(visibilitySelector)
 	if err != nil {
 		return errors.Wrap(err, "查找可见范围下拉框失败")
 	}
-	if err := humanize.Click(dropdown); err != nil {
+	if err := clickInView(dropdown.Context(page.GetContext()), settingTimeout); err != nil {
 		return errors.Wrap(err, "点击可见范围下拉框失败")
 	}
 	time.Sleep(500 * time.Millisecond)

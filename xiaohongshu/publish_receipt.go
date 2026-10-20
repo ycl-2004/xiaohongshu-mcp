@@ -26,6 +26,7 @@ var ContentTypes = []string{"虚构演绎，仅供娱乐", "笔记含AI合成内
 const (
 	latestNotePath     = "/api/galaxy/creator/home/latest_note_data"
 	visibilitySelector = "div.permission-card-wrapper div.d-select-content" // 可见范围下拉框（显示当前选中的项）
+	settingTimeout     = 15 * time.Second                                   // 找一个设置控件、点开它、点选项，各自的时限
 )
 
 // publishPath 网页发笔记的接口，形如 /web_api/sns/v2/note（以实测为准再收紧）。
@@ -35,6 +36,21 @@ var publishPath = regexp.MustCompile(`/sns/v\d+/note$`)
 // 选了以后显示选中的那一项（2026-10-11 实测，选完占位文字就没了）。没有返回 null。
 const contentTypeSelectJS = `(...options) => [...document.querySelectorAll('div.d-select-wrapper')]
 	.find(e => { const text = e.innerText || ''; return text.includes('内容类型声明') || options.some(o => text.includes(o)); }) || null`
+
+// setNoteSettings 发布前的两项设置：选可见范围；请求了内容类型声明再选声明，没请求（空）就不碰它。
+// 都选完回读，没选上就报错（不发布）。
+func setNoteSettings(page *rod.Page, visibility, contentType string) error {
+	if err := selectVisibility(page, visibility); err != nil {
+		return errors.Wrap(err, "设置可见范围失败")
+	}
+	if contentType == "" {
+		return nil
+	}
+	if err := setContentType(page, contentType); err != nil {
+		return errors.Wrap(err, "设置内容类型声明失败")
+	}
+	return nil
+}
 
 // selectVisibility 选可见范围并回读：页面上显示的不是它就报错。宁可不发，也不能误发成公开。
 func selectVisibility(page *rod.Page, visibility string) error {
@@ -67,16 +83,19 @@ func shownContentType(page *rod.Page) string {
 }
 
 // setContentType 在「添加内容类型声明」里选一项，选完回读这个下拉框显示的是它；找不到、选不上都报错（不发布）。
+// 自己把控件弄到点得到的地方（展开「内容设置」、滚到视口中间），不靠前面的步骤顺带滚过去。
 func setContentType(page *rod.Page, option string) error {
-	wrapper, err := page.Timeout(5 * time.Second).ElementByJS(rod.Eval(contentTypeSelectJS, contentTypeArgs()...))
+	expandContentSettings(page)
+	wrapper, err := page.Timeout(settingTimeout).ElementByJS(rod.Eval(contentTypeSelectJS, contentTypeArgs()...))
 	if err != nil || wrapper == nil {
 		return errors.New("没找到「添加内容类型声明」，没有发布")
 	}
-	opener, err := wrapper.Element("div.d-select-content")
+	wrapper = wrapper.Context(page.GetContext()) // 找控件的时限不带进后面的点击和回读
+	opener, err := wrapper.Timeout(settingTimeout).Element("div.d-select-content")
 	if err != nil {
 		return errors.Wrap(err, "没找到内容类型声明的下拉框")
 	}
-	if err := humanize.Click(opener); err != nil {
+	if err := clickInView(opener.Context(page.GetContext()), settingTimeout); err != nil {
 		return errors.Wrap(err, "点开内容类型声明失败")
 	}
 	time.Sleep(800 * time.Millisecond) // 技术等待：等下拉渲染
@@ -89,7 +108,7 @@ func setContentType(page *rod.Page, option string) error {
 		if err != nil || !strings.Contains(text, option) || !isElementClickable(opt) {
 			continue
 		}
-		if err := humanize.Click(opt); err != nil {
+		if err := humanize.Click(opt.Timeout(settingTimeout)); err != nil {
 			return errors.Wrap(err, "选择内容类型声明失败")
 		}
 		time.Sleep(500 * time.Millisecond)
@@ -101,6 +120,45 @@ func setContentType(page *rod.Page, option string) error {
 		return nil
 	}
 	return errors.Errorf("内容类型声明里没有「%s」，没有发布", option)
+}
+
+// clickInView 把控件滚到视口中间再点，点击另给时限。发布页底部悬浮着「暂存离开 / 发布」一栏：控件正好落在它下面时，
+// rod 的 ScrollIntoView（只在不在视口里时才滚）认为它已经可见、不滚，点击一直被这一栏挡着，直到超时
+// （2026-10-20：选「仅自己可见」时点可见范围会先把这一块滚上来；选默认的公开可见不点它，声明就点不到了）。
+// 滚动用页面自己的 scrollIntoView：rod 没有「滚到中间」，这一步只滚动、不发鼠标键盘事件。
+func clickInView(el *rod.Element, timeout time.Duration) error {
+	el = el.Timeout(timeout)
+	if _, err := el.Eval(`() => this.scrollIntoView({block: "center"})`); err != nil {
+		return errors.Wrap(err, "滚动到控件失败")
+	}
+	time.Sleep(300 * time.Millisecond) // 技术等待：等滚动落位
+	return humanize.Click(el)
+}
+
+// collapsedSettingsJS 「内容设置」收起时它标题旁边的「展开」（标题往上最多三层里找）；没收起、没有这一块返回 null。
+const collapsedSettingsJS = `() => {
+	const own = e => [...e.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim();
+	const title = [...document.querySelectorAll('body *')].find(e => own(e) === '内容设置');
+	for (let box = title && title.parentElement, i = 0; box && i < 3; box = box.parentElement, i++) {
+		const toggle = [...box.querySelectorAll('*')].find(e => own(e) === '展开');
+		if (toggle) return toggle;
+	}
+	return null;
+}`
+
+// expandContentSettings 「内容设置」收起了就点「展开」：收起时里面的声明、可见范围都不显示，点不到。没收起就什么都不做。
+func expandContentSettings(page *rod.Page) {
+	toggle, err := page.Sleeper(rod.NotFoundSleeper).ElementByJS(rod.Eval(collapsedSettingsJS))
+	if err != nil || toggle == nil {
+		return
+	}
+	toggle = toggle.Sleeper(rod.DefaultSleeper).Context(page.GetContext())
+	if err := clickInView(toggle, settingTimeout); err != nil {
+		logrus.Warnf("展开「内容设置」失败: %v", err)
+		return
+	}
+	time.Sleep(500 * time.Millisecond) // 技术等待：等展开
+	logrus.Info("已展开「内容设置」")
 }
 
 func contentTypeArgs() []any {
