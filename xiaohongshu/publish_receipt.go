@@ -40,6 +40,7 @@ const contentTypeSelectJS = `(...options) => [...document.querySelectorAll('div.
 // setNoteSettings 发布前的两项设置：选可见范围；请求了内容类型声明再选声明，没请求（空）就不碰它。
 // 都选完回读，没选上就报错（不发布）。
 func setNoteSettings(page *rod.Page, visibility, contentType string) error {
+	expandContentSettings(page) // 收起时回读也可能读不到，先展开
 	if err := selectVisibility(page, visibility); err != nil {
 		return errors.Wrap(err, "设置可见范围失败")
 	}
@@ -86,16 +87,23 @@ func shownContentType(page *rod.Page) string {
 // 自己把控件弄到点得到的地方（展开「内容设置」、滚到视口中间），不靠前面的步骤顺带滚过去。
 func setContentType(page *rod.Page, option string) error {
 	expandContentSettings(page)
-	wrapper, err := page.Timeout(settingTimeout).ElementByJS(rod.Eval(contentTypeSelectJS, contentTypeArgs()...))
-	if err != nil || wrapper == nil {
+	found, err := page.Timeout(settingTimeout).ElementByJS(rod.Eval(contentTypeSelectJS, contentTypeArgs()...))
+	if err != nil || found == nil {
 		return errors.New("没找到「添加内容类型声明」，没有发布")
 	}
-	wrapper = wrapper.Context(page.GetContext()) // 找控件的时限不带进后面的点击和回读
-	opener, err := wrapper.Timeout(settingTimeout).Element("div.d-select-content")
+	wrapper, err := onPage(page, found)
+	if err != nil {
+		return errors.Wrap(err, "没找到「添加内容类型声明」，没有发布")
+	}
+	found, err = wrapper.Timeout(settingTimeout).Element("div.d-select-content")
 	if err != nil {
 		return errors.Wrap(err, "没找到内容类型声明的下拉框")
 	}
-	if err := clickInView(opener.Context(page.GetContext()), settingTimeout); err != nil {
+	opener, err := onPage(page, found)
+	if err != nil {
+		return errors.Wrap(err, "没找到内容类型声明的下拉框")
+	}
+	if err := clickInView(opener, settingTimeout); err != nil {
 		return errors.Wrap(err, "点开内容类型声明失败")
 	}
 	time.Sleep(800 * time.Millisecond) // 技术等待：等下拉渲染
@@ -122,6 +130,12 @@ func setContentType(page *rod.Page, option string) error {
 	return errors.Errorf("内容类型声明里没有「%s」，没有发布", option)
 }
 
+// onPage 把限时找到的元素换回整页：page.Timeout(...) 找到的元素，连它的 page 都带着找的时限，
+// humanize 点击、回读都会用到，找得慢一点点击就跟着超时（同 2026-10-20 删二级回复那次）。
+func onPage(page *rod.Page, el *rod.Element) (*rod.Element, error) {
+	return page.ElementFromObject(el.Object)
+}
+
 // clickInView 把控件滚到视口中间再点，点击另给时限。发布页底部悬浮着「暂存离开 / 发布」一栏：控件正好落在它下面时，
 // rod 的 ScrollIntoView（只在不在视口里时才滚）认为它已经可见、不滚，点击一直被这一栏挡着，直到超时
 // （2026-10-20：选「仅自己可见」时点可见范围会先把这一块滚上来；选默认的公开可见不点它，声明就点不到了）。
@@ -135,11 +149,12 @@ func clickInView(el *rod.Element, timeout time.Duration) error {
 	return humanize.Click(el)
 }
 
-// collapsedSettingsJS 「内容设置」收起时它标题旁边的「展开」（标题往上最多三层里找）；没收起、没有这一块返回 null。
+// collapsedSettingsJS 「内容设置」收起时它标题那一行的「展开」（标题往上最多两层，不出这一行，免得点到别处的「展开」）；
+// 没收起、没有这一块返回 null。
 const collapsedSettingsJS = `() => {
 	const own = e => [...e.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim();
 	const title = [...document.querySelectorAll('body *')].find(e => own(e) === '内容设置');
-	for (let box = title && title.parentElement, i = 0; box && i < 3; box = box.parentElement, i++) {
+	for (let box = title && title.parentElement, i = 0; box && i < 2; box = box.parentElement, i++) {
 		const toggle = [...box.querySelectorAll('*')].find(e => own(e) === '展开');
 		if (toggle) return toggle;
 	}
@@ -148,12 +163,15 @@ const collapsedSettingsJS = `() => {
 
 // expandContentSettings 「内容设置」收起了就点「展开」：收起时里面的声明、可见范围都不显示，点不到。没收起就什么都不做。
 func expandContentSettings(page *rod.Page) {
-	toggle, err := page.Sleeper(rod.NotFoundSleeper).ElementByJS(rod.Eval(collapsedSettingsJS))
-	if err != nil || toggle == nil {
+	found, err := page.Sleeper(rod.NotFoundSleeper).ElementByJS(rod.Eval(collapsedSettingsJS))
+	if err != nil || found == nil {
 		return
 	}
-	toggle = toggle.Sleeper(rod.DefaultSleeper).Context(page.GetContext())
-	if err := clickInView(toggle, settingTimeout); err != nil {
+	toggle, err := onPage(page, found) // 只看一眼的 sleeper 不带进点击
+	if err == nil {
+		err = clickInView(toggle, settingTimeout)
+	}
+	if err != nil {
 		logrus.Warnf("展开「内容设置」失败: %v", err)
 		return
 	}
@@ -244,9 +262,14 @@ func firstString(m map[string]any, keys ...string) string {
 }
 
 // publishWithReceipt 点发布前占位回执，按发布请求的回包确认；没确认就退回「最近一篇笔记」核对。
+// 先等发布按钮能点再占位：一直不能点就是没发出（还没点），不留「结果不明」的回执。
 func publishWithReceipt(ctx context.Context, page *rod.Page, trace *publishTrace, key, title string) (*InteractionReceipt, error) {
+	btn, err := waitForPublishButtonClickable(page, 15*time.Second)
+	if err != nil {
+		return nil, err
+	}
 	observer := observePublish(page, title)
-	receipt, err := submitObserved(page, observer, key, func() error { return clickPublishButton(page) })
+	receipt, err := submitObserved(page, observer, key, func() error { return pressPublishButton(page, btn) })
 	if !unconfirmed(err) {
 		return receipt, err
 	}

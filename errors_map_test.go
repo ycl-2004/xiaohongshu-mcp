@@ -103,6 +103,8 @@ func TestAPublishThatFailsBeforeTheClickIsNotPublished(t *testing.T) {
 			http.StatusBadGateway, "INTERACTION_NOT_SENT", xiaohongshu.StateNotSent},
 		{"点发布前遇到验证页", fmt.Errorf("上传图片: %w", &xiaohongshu.PageAccessError{Code: xiaohongshu.CodeSecurityVerification}),
 			http.StatusConflict, xiaohongshu.CodeSecurityVerification, xiaohongshu.StateNotSent},
+		{"创作中心会话过期", fmt.Errorf("小红书发布失败: %w", xiaohongshu.ErrCreatorSessionExpired),
+			http.StatusConflict, xiaohongshu.CodeLoginRequired, xiaohongshu.StateNotSent},
 		{"点了发布之后超时", &xiaohongshu.InteractionError{Stage: "confirm", State: xiaohongshu.StateUnknown, Cause: context.DeadlineExceeded},
 			http.StatusBadGateway, "INTERACTION_UNKNOWN", xiaohongshu.StateUnknown},
 		{"同一 key 已有未确认的记录", &xiaohongshu.DuplicateError{Saved: xiaohongshu.InteractionReceipt{State: xiaohongshu.StateUnknown}},

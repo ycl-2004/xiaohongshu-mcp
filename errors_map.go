@@ -69,12 +69,16 @@ type writeFailure struct {
 // notPublished 发笔记在点「发布」之前就失败了（回执在点发布前才占位，所以不是 InteractionError 的都在点之前）：
 // 记成没发出，码是 INTERACTION_NOT_SENT（同一 key 可以重试），不按超时归成 TIMEOUT——发布要先填完整页表单，
 // 点之前卡住只说明这次没发出去（2026-10-20：声明控件点不到，超时被当成「机器慢」，白占了当天唯一一篇的额度）。
-// 被页面拦下的照旧用拦截码；点了发布之后的失败本来就是 InteractionError（超时是 INTERACTION_UNKNOWN），原样返回。
+// 被页面拦下的照旧用拦截码；创作中心会话过期（cookie 已删）也是掉登录，回 LOGIN_REQUIRED，调用方据此停发等人重扫，
+// 不当成页面卡住反复重试。点了发布之后的失败本来就是 InteractionError（超时是 INTERACTION_UNKNOWN），原样返回。
 func notPublished(err error) error {
 	var interaction *xiaohongshu.InteractionError
 	var dup *xiaohongshu.DuplicateError
 	if stderrors.As(err, &interaction) || stderrors.As(err, &dup) {
 		return err
+	}
+	if stderrors.Is(err, xiaohongshu.ErrCreatorSessionExpired) {
+		err = fmt.Errorf("%w：%w", &xiaohongshu.PageAccessError{Code: xiaohongshu.CodeLoginRequired}, err)
 	}
 	return &xiaohongshu.InteractionError{Stage: "prepare", State: xiaohongshu.StateNotSent, Cause: err}
 }

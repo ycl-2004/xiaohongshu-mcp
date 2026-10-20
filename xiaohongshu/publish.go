@@ -849,7 +849,12 @@ func clickPublishButton(page *rod.Page) error {
 	if err != nil {
 		return err
 	}
+	return pressPublishButton(page, btn)
+}
 
+// pressPublishButton 点已经等到能点的发布按钮（Modified for ycl-2004/xiaohongshu-mcp：从 clickPublishButton 拆出来，
+// 带回执发布时先等按钮、再占位回执、再点）。
+func pressPublishButton(page *rod.Page, btn *publishButton) error {
 	if btn.isWidget {
 		return clickPublishWidget(page, btn.elem)
 	}
@@ -1330,11 +1335,15 @@ func setVisibility(page *rod.Page, visibility string) error {
 
 	// Modified for ycl-2004/xiaohongshu-mcp：同内容类型声明，先展开「内容设置」、滚到视口中间再点，找和点各有时限
 	expandContentSettings(page)
-	dropdown, err := page.Timeout(settingTimeout).Element(visibilitySelector)
+	found, err := page.Timeout(settingTimeout).Element(visibilitySelector)
 	if err != nil {
 		return errors.Wrap(err, "查找可见范围下拉框失败")
 	}
-	if err := clickInView(dropdown.Context(page.GetContext()), settingTimeout); err != nil {
+	dropdown, err := onPage(page, found)
+	if err != nil {
+		return errors.Wrap(err, "查找可见范围下拉框失败")
+	}
+	if err := clickInView(dropdown, settingTimeout); err != nil {
 		return errors.Wrap(err, "点击可见范围下拉框失败")
 	}
 	time.Sleep(500 * time.Millisecond)
@@ -1350,7 +1359,7 @@ func setVisibility(page *rod.Page, visibility string) error {
 			continue
 		}
 		if strings.Contains(text, visibility) {
-			if err := humanize.Click(opt); err != nil {
+			if err := humanize.Click(opt.Timeout(settingTimeout)); err != nil {
 				return errors.Wrap(err, "选择可见范围失败")
 			}
 			slog.Info("已设置可见范围", "visibility", visibility)
