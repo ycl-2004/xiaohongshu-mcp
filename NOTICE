@@ -31,7 +31,7 @@ Changes from the ycl-2004 patches include: separate read and write bearer tokens
 loopback-only listening, MCP endpoint off by default, no CORS, private
 atomic cookie writes, one browser operation at a time, browser sandbox kept on macOS,
 structured timeout and page-access error codes, comment submission receipts with idempotency
-keys, reply attribution on notifications, reading one comment thread with its replies, deleting the account's own comment (ported from liaogx), read-only private message listing, reading and replying in existing private conversations (no new conversations), publishing notes with a content-type declaration (e.g. AI-generated content), visibility and declaration read back before publishing, publish receipts with the note id, a publish-page inspection that never publishes, choosing the Chinese site or the overseas rednote site
+keys, reply attribution on notifications, reading one comment thread with its replies, deleting the account's own comment or reply (ported from liaogx), read-only private message listing, reading and replying in existing private conversations (no new conversations), publishing notes with a content-type declaration (e.g. AI-generated content), visibility and declaration read back before publishing, publish receipts with the note id, a publish-page inspection that never publishes, choosing the Chinese site or the overseas rednote site
 per process (XHS_SITE; session files are tagged with their site and never loaded or overwritten across sites), and search
 waiting for result hydration instead of full-page stability (ported from upstream PRs #835 and #839).
 Original authors are not responsible for these modifications.

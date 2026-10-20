@@ -130,6 +130,7 @@ func openDeleteConfirm(ctx context.Context, page *rod.Page, el *rod.Element) (*r
 	if err != nil {
 		return nil, fmt.Errorf("评论没有「…」菜单")
 	}
+	more = more.Context(el.GetContext()) // 5 秒只管找「…」：点击要像人一样移鼠标、停一下，服务器上会超过 5 秒
 	if err := humanize.Click(more); err != nil {
 		return nil, fmt.Errorf("点「…」失败: %w", err)
 	}

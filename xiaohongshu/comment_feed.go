@@ -243,7 +243,9 @@ func findCommentElement(ctx context.Context, page *rod.Page, commentID, userID s
 func lookupComment(page *rod.Page, commentID, userID string) *rod.Element {
 	if commentID != "" {
 		if el, err := page.Timeout(2 * time.Second).Element(fmt.Sprintf("#comment-%s", commentID)); err == nil && el != nil {
-			return el
+			// 2 秒只管找：找到的元素换回整页的时限，后面滚动、悬停、点「…」才不会 2 秒后全部超时
+			// （2026-10-20：删二级回复要先展开，服务器上慢，必超时）
+			return el.Context(page.GetContext())
 		}
 	}
 
@@ -258,7 +260,7 @@ func lookupComment(page *rod.Page, commentID, userID string) *rod.Element {
 	}
 	for _, el := range elements {
 		if userEl, err := el.Timeout(500 * time.Millisecond).Element(fmt.Sprintf(`[data-user-id="%s"]`, userID)); err == nil && userEl != nil {
-			return el
+			return el.Context(page.GetContext())
 		}
 	}
 	return nil
