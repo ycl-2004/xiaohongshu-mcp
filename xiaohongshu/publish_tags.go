@@ -24,7 +24,7 @@ func checkTags(contentElem *rod.Element, tags []string, body string) error {
 	if len(tags) == 0 {
 		return nil
 	}
-	line, err := lastParagraphText(contentElem)
+	line, err := lastParagraph(contentElem)
 	if err != nil {
 		slog.Warn("读不到话题标签那一行，照原样发", "error", err)
 		return nil
@@ -32,7 +32,7 @@ func checkTags(contentElem *rod.Element, tags []string, body string) error {
 	if !malformedTags(line, tags) {
 		return nil
 	}
-	slog.Warn("话题标签那一行坏了，删掉、不带标签发", "line", line)
+	slog.Warn("话题标签那一行坏了，删掉、不带标签发", "line", line.Text, "plain", line.Plain)
 	if err := clearLastParagraph(contentElem); err != nil {
 		return errors.Wrap(err, "删掉坏了的话题标签失败")
 	}
@@ -53,17 +53,28 @@ func checkTags(contentElem *rod.Element, tags []string, body string) error {
 	}
 }
 
-// malformedTags 标签那一行有没有坏：有「##」开头的，或者某个标签的字前面没有「#」。
-// 联想换成了别的话题（字对不上）、几个话题挨在一起，都不算坏。
-func malformedTags(line string, tags []string) bool {
+// tagLine 标签那一段：Text 是页面上的文字（innerText），Plain 只有这一段里直接的文字，话题块（元素）换成空格。
+// 话题块里的「#」可能是样式画的（innerText 里没有），所以「丢了 #」只看 Plain，不冤枉好好的话题块。
+type tagLine struct {
+	Text  string `json:"text"`
+	Plain string `json:"plain"`
+}
+
+// malformedTags 标签那一行有没有坏：文字里有「##」；或者话题块以外的纯文字里，有单独一个「#」、「##」开头的、
+// 和某个标签一字不差却没带「#」的（话题没挂上，「#」也丢了）。联想换成了别的话题、几个话题挨在一起、
+// 话题没挂上但「#标签」还在（纯文字的标签），都不算坏。
+func malformedTags(line tagLine, tags []string) bool {
+	if strings.Contains(invisible.Replace(line.Text), "##") {
+		return true
+	}
 	want := map[string]bool{}
 	for _, tag := range tags {
 		if tag = strings.TrimLeft(strings.TrimSpace(tag), "#"); tag != "" {
 			want[tag] = true
 		}
 	}
-	for _, token := range strings.Fields(invisible.Replace(line)) {
-		if strings.HasPrefix(token, "##") || (!strings.HasPrefix(token, "#") && want[token]) {
+	for _, token := range strings.Fields(invisible.Replace(line.Plain)) {
+		if token == "#" || strings.HasPrefix(token, "##") || (!strings.HasPrefix(token, "#") && want[token]) {
 			return true
 		}
 	}
@@ -84,13 +95,22 @@ func editorText(contentElem *rod.Element) (string, error) {
 	return got.Value.Str(), nil
 }
 
-// lastParagraphText 编辑框最后一段的文字：inputTags 先按两次回车，标签在单独的一段。
-func lastParagraphText(contentElem *rod.Element) (string, error) {
-	got, err := contentElem.Eval(`() => { const p = this.lastElementChild; return p ? p.innerText : "" }`)
+// lastParagraph 编辑框最后一段：inputTags 先按两次回车，标签在单独的一段。
+func lastParagraph(contentElem *rod.Element) (tagLine, error) {
+	got, err := contentElem.Eval(`() => {
+		const p = this.lastElementChild;
+		if (!p) return {text: "", plain: ""};
+		const plain = Array.from(p.childNodes).map(n => n.nodeType === Node.TEXT_NODE ? n.textContent : " ").join("");
+		return {text: p.innerText, plain};
+	}`)
 	if err != nil {
-		return "", err
+		return tagLine{}, err
 	}
-	return got.Value.Str(), nil
+	var line tagLine
+	if err := got.Value.Unmarshal(&line); err != nil {
+		return tagLine{}, err
+	}
+	return line, nil
 }
 
 // clearLastParagraph 选中编辑框最后一段的全部内容，按一次退格。选区用页面自己的 Selection 设：

@@ -15,14 +15,18 @@ import (
 var tagsOf20261020 = []string{"温哥华数学辅导", "温哥华补课", "BC高中数学", "数学一对一", "大温家长"}
 
 func TestMalformedTagsCatchesTheDoubleHashAndTheLostHash(t *testing.T) {
-	// 2026-10-20 话题搜索接口报 500 时发布页上那一行
-	require.True(t, malformedTags("##温哥华数学辅导 温哥华补课 #BC高中数学 #数学一对一 #大温家长 ", tagsOf20261020))
-	require.True(t, malformedTags("#温哥华数学辅导 温哥华补课 #BC高中数学", tagsOf20261020), "丢了「#」")
-	require.True(t, malformedTags("#温哥华数学辅导 ##BC高中数学", tagsOf20261020))
-	require.False(t, malformedTags("#温哥华数学辅导 #温哥华补课 #BC高中数学 #数学一对一 #大温家长 ", tagsOf20261020))
-	require.False(t, malformedTags("#温哥华数学\u200b #BC高中数学课程", tagsOf20261020), "联想换成了别的话题不算坏")
-	require.False(t, malformedTags("#温哥华数学辅导#温哥华补课", tagsOf20261020), "挨在一起不算坏")
-	require.False(t, malformedTags("", tagsOf20261020))
+	broken := func(text, plain string) bool { return malformedTags(tagLine{Text: text, Plain: plain}, tagsOf20261020) }
+	// 2026-10-20 话题搜索接口报 500 时发布页上那一行（话题块里的「#」是文字）
+	require.True(t, broken("##温哥华数学辅导 温哥华补课 #BC高中数学 ", "  温哥华补课  "))
+	require.True(t, broken("#温哥华数学辅导 温哥华补课 #BC高中数学", "  温哥华补课  "), "丢了「#」")
+	// 话题块里的「#」是样式画的：页面文字里没有，多出来的那个「#」是块外面的纯文字
+	require.True(t, broken("#温哥华数学辅导 温哥华补课", "# 温哥华补课 "))
+	require.False(t, broken("温哥华数学辅导 温哥华补课 BC高中数学", "     "), "样式画「#」的好话题不冤枉")
+	require.False(t, broken("#温哥华数学辅导 #温哥华补课 #BC高中数学 #数学一对一 #大温家长 ", "         "))
+	require.False(t, broken("#温哥华数学\u200b #BC高中数学课程", "   "), "联想换成了别的话题不算坏")
+	require.False(t, broken("#温哥华数学辅导#温哥华补课", "  "), "挨在一起不算坏")
+	require.False(t, broken("#温哥华补课 ", "#温哥华补课 "), "话题没挂上、「#标签」还在，不算坏")
+	require.False(t, broken("", ""))
 	require.Equal(t, "正文 第二段", flatText("正文\n\n第二段\u200b\n"))
 }
 
@@ -55,13 +59,18 @@ func TestABrokenTagLineIsDroppedAndTheBodyIsLeftAlone(t *testing.T) {
 	require.NotContains(t, after, "温哥华补课")
 }
 
-// TestAGoodTagLineIsKept 标签好好的不动。
+// TestAGoodTagLineIsKept 标签好好的不动：话题块里的「#」是文字、是样式画的都一样。
 func TestAGoodTagLineIsKept(t *testing.T) {
-	_, ed := editorPage(t, `<p>正文。</p><p><br></p><p>#温哥华数学辅导 #温哥华补课</p>`)
-	require.NoError(t, checkTags(ed, tagsOf20261020, "正文。"))
-	line, err := lastParagraphText(ed)
-	require.NoError(t, err)
-	require.Equal(t, "#温哥华数学辅导 #温哥华补课", line)
+	for _, chips := range []string{
+		`<a class="topic">#温哥华数学辅导</a> <a class="topic">#温哥华补课</a>`,
+		`<style>.topic::before{content:"#"}</style><a class="topic">温哥华数学辅导</a> <a class="topic">温哥华补课</a>`,
+	} {
+		_, ed := editorPage(t, `<p>正文。</p><p><br></p><p>`+chips+`</p>`)
+		require.NoError(t, checkTags(ed, tagsOf20261020, "正文。"))
+		line, err := lastParagraph(ed)
+		require.NoError(t, err)
+		require.Contains(t, line.Text, "温哥华补课", chips)
+	}
 }
 
 // TestTagsInTheBodyParagraphAreNotDeletedWithIt 标签没落在单独一段（和正文同一段）：删了会动正文，就不发。
