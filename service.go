@@ -251,12 +251,14 @@ func (s *XiaohongshuService) savedSessionReusable(ctx context.Context, seq uint6
 	checked := false
 	for attempt := 1; attempt <= 2; attempt++ {
 		var ok bool
-		err := withBrowserPage(func(page *rod.Page) error {
-			checkCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-			defer cancel()
-			loggedIn, err := xiaohongshu.NewLogin(page).CheckLoginStatus(checkCtx)
-			ok = loggedIn
-			return err
+		err := reuseCheck(func() error {
+			return withBrowserPage(func(page *rod.Page) error {
+				checkCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+				defer cancel()
+				loggedIn, err := xiaohongshu.NewLogin(page).CheckLoginStatus(checkCtx)
+				ok = loggedIn
+				return err
+			})
 		})
 		logrus.Infof("保存后会话复用检查: 会话 #%d attempt=%d ok=%v err=%v", seq, attempt, ok, err)
 		if ok {
@@ -275,6 +277,19 @@ func (s *XiaohongshuService) savedSessionReusable(ctx context.Context, seq uint6
 		return true
 	}
 	return false
+}
+
+// reuseCheck runs one reuse check and turns a panic into an error: opening the
+// fresh browser goes through Must* calls (MustLaunch, MustPage) that panic on a
+// starved machine, and a check that could not run is "not checked", not "not
+// logged in". Modified for ycl-2004/xiaohongshu-mcp; see NOTICE.
+func reuseCheck(check func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("打开核对用的浏览器出错: %v", r)
+		}
+	}()
+	return check()
 }
 
 // LoginQrcodeState 最近一次扫码会话的状态：只读内存里的登记，不开浏览器。
@@ -309,17 +324,19 @@ func (s *XiaohongshuService) waitScanInBackground(
 	logrus.Infof("扫码前 cookie: 会话 #%d %s", session.seq, pre)
 
 	go func() {
-		defer session.withPageOperation(closeBrowser)
-		defer cancel()
 		// A background goroutine has no gin.Recovery: any panic here exits the
-		// whole process and a confirmed scan is reported as failed. Record it as
-		// a failed session instead. Modified for ycl-2004/xiaohongshu-mcp; see NOTICE.
+		// whole process and a confirmed scan is reported as failed. Registered
+		// first so it runs last and also covers closeBrowser below (MustClose
+		// panics on a browser that already died). Finishing an already finished
+		// session is a no-op. Modified for ycl-2004/xiaohongshu-mcp; see NOTICE.
 		defer func() {
 			if r := recover(); r != nil {
 				logrus.Errorf("扫码登录后台出错（已兜住，进程不退出）: 会话 #%d: %v", session.seq, r)
 				s.logins.finish(session, LoginSessionFailed, "扫码登录出了问题，请再取一张二维码试试。")
 			}
 		}()
+		defer session.withPageOperation(closeBrowser)
+		defer cancel()
 
 		// Log and photograph every state transition: "scanned but no OTP
 		// prompt" is invisible in the UI without this.
@@ -337,6 +354,11 @@ func (s *XiaohongshuService) waitScanInBackground(
 					// 发送/获取/重新获取 control is what triggers it.
 					autoSent = true
 					go func() {
+						defer func() { // same reason: no gin.Recovery out here
+							if r := recover(); r != nil {
+								logrus.Errorf("自动点发送验证码出错（已兜住）: 会话 #%d: %v", session.seq, r)
+							}
+						}()
 						time.Sleep(2 * time.Second)
 						clicked, phone, err := loginAction.RequestVerificationCode(ctxTimeout)
 						logrus.Infof("首次要求验证码，自动点击发送: 会话 #%d clicked=%q phone=%q err=%v", session.seq, clicked, phone, err)
