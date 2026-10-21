@@ -26,6 +26,9 @@ Marketing_Agent patches rebased on top. Where both changed the same thing they w
 - QR login: the fork's login sessions (OTP, security QR) are kept; GET /login/qrcode also returns a
   numeric session, and GET /login/qrcode/state reports it as none / waiting / success / expired /
   failed (raw state in detail).
+  Opening the home page for a login check, a QR code or a blocking login returns an error instead of
+  panicking; the post-scan goroutine recovers from panics; a post-scan reuse check that cannot finish
+  (page load error or timeout) does not turn a confirmed scan into a failure.
 
 Changes from the ycl-2004 patches include: separate read and write bearer tokens,
 loopback-only listening, MCP endpoint off by default, no CORS, private

@@ -240,11 +240,19 @@ const loginSessionNotReusableMessage = "扫码成功，但保存的会话在新�
 // a publish would, and checks www.xiaohongshu.com for a signed-in user. One
 // retry absorbs a slow first render; two misses mean Xiaohongshu is not
 // honouring the session outside the browser that created it.
+//
+// Only a check that loaded the page and saw no signed-in user counts as a
+// miss. A check that could not finish (page load error or timeout, usually a
+// starved machine) proves nothing: the scan was confirmed and the cookies are
+// saved, so the login is reported as done and the next operation finds out
+// (2026-10-21: a throttled server timed out both checks and a good login was
+// reported as failed). Modified for ycl-2004/xiaohongshu-mcp; see NOTICE.
 func (s *XiaohongshuService) savedSessionReusable(ctx context.Context, seq uint64) bool {
+	checked := false
 	for attempt := 1; attempt <= 2; attempt++ {
 		var ok bool
 		err := withBrowserPage(func(page *rod.Page) error {
-			checkCtx, cancel := context.WithTimeout(ctx, 40*time.Second)
+			checkCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 			defer cancel()
 			loggedIn, err := xiaohongshu.NewLogin(page).CheckLoginStatus(checkCtx)
 			ok = loggedIn
@@ -254,10 +262,17 @@ func (s *XiaohongshuService) savedSessionReusable(ctx context.Context, seq uint6
 		if ok {
 			return true
 		}
+		if err == nil {
+			checked = true
+		}
 		if ctx.Err() != nil {
-			return false
+			break
 		}
 		time.Sleep(2 * time.Second)
+	}
+	if !checked {
+		logrus.Warnf("保存后会话复用检查没能做完（页面加载出错或超时），按扫码成功算: 会话 #%d", seq)
+		return true
 	}
 	return false
 }
@@ -296,6 +311,15 @@ func (s *XiaohongshuService) waitScanInBackground(
 	go func() {
 		defer session.withPageOperation(closeBrowser)
 		defer cancel()
+		// A background goroutine has no gin.Recovery: any panic here exits the
+		// whole process and a confirmed scan is reported as failed. Record it as
+		// a failed session instead. Modified for ycl-2004/xiaohongshu-mcp; see NOTICE.
+		defer func() {
+			if r := recover(); r != nil {
+				logrus.Errorf("扫码登录后台出错（已兜住，进程不退出）: 会话 #%d: %v", session.seq, r)
+				s.logins.finish(session, LoginSessionFailed, "扫码登录出了问题，请再取一张二维码试试。")
+			}
+		}()
 
 		// Log and photograph every state transition: "scanned but no OTP
 		// prompt" is invisible in the UI without this.

@@ -319,13 +319,28 @@ func verificationSubmitEnabled(className string, disabled, ariaDisabled *string)
 	return true
 }
 
+// openHome 打开当前站点首页、等页面加载完。出错（机器忙时多半是超时）返回错误，不用 Must 系列 panic：
+// 扫码后核对登录跑在后台协程里，panic 会让整个进程退出（2026-10-21：服务器 CPU 被限速，核对超时，
+// 工具崩了，手机上已经确认的登录报成没成）。Modified for ycl-2004/xiaohongshu-mcp; see NOTICE.
+func openHome(pp *rod.Page) error {
+	if err := pp.Navigate(CurrentSite().HomeURL); err != nil {
+		return errors.Wrap(err, "打开首页失败")
+	}
+	if err := pp.WaitLoad(); err != nil {
+		return errors.Wrap(err, "等首页加载失败")
+	}
+	return nil
+}
+
 func (a *LoginAction) CheckLoginStatus(ctx context.Context) (bool, error) {
 	// 加超时保护：只是查登录态的快速检查，不应无限挂（登录扫码的等待在 Login/WaitForLogin 里）。
 	// 经代理访问 INTL 首页 load 事件可能超过 30s，放宽到 60s。
 	pp := a.page.Context(ctx).Timeout(60 * time.Second)
 	trace := newPublishTrace("login-check")
 	trace.AttachNetwork(pp)
-	pp.MustNavigate(CurrentSite().HomeURL).MustWaitLoad()
+	if err := openHome(pp); err != nil {
+		return false, err
+	}
 
 	time.Sleep(1 * time.Second)
 
@@ -423,7 +438,9 @@ func (a *LoginAction) Login(ctx context.Context) error {
 	pp := a.page.Context(ctx)
 
 	// 导航到小红书首页，这会触发二维码弹窗
-	pp.MustNavigate(CurrentSite().HomeURL).MustWaitLoad()
+	if err := openHome(pp); err != nil {
+		return err
+	}
 
 	time.Sleep(2 * time.Second)
 
@@ -431,7 +448,9 @@ func (a *LoginAction) Login(ctx context.Context) error {
 		return nil
 	}
 
-	pp.MustElement(".main-container .user .link-wrapper .channel")
+	if _, err := pp.Element(".main-container .user .link-wrapper .channel"); err != nil {
+		return errors.Wrap(err, "等登录后的用户入口失败")
+	}
 
 	return nil
 }
@@ -440,7 +459,9 @@ func (a *LoginAction) FetchQrcodeImage(ctx context.Context) (string, bool, error
 	pp := a.page.Context(ctx)
 
 	// 导航到小红书首页，这会触发二维码弹窗
-	pp.MustNavigate(CurrentSite().HomeURL).MustWaitLoad()
+	if err := openHome(pp); err != nil {
+		return "", false, err
+	}
 
 	time.Sleep(2 * time.Second)
 
