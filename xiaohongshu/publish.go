@@ -666,10 +666,17 @@ func submitPublish(ctx context.Context, page *rod.Page, trace *publishTrace, pos
 	if err := waitAndClickTitleInput(titleElem); err != nil {
 		return nil, err
 	}
+	body, err := editorText(contentElem)
+	if err != nil {
+		return nil, errors.Wrap(err, "回读正文失败")
+	}
 	if err := inputTags(ctx, contentElem, tags); err != nil {
 		return nil, err
 	}
 	trace.Capture(page, "tags_filled")
+	if err := checkTags(contentElem, tags, body); err != nil {
+		return nil, err
+	}
 
 	humanize.Delay(ctx, humanize.AfterType)
 
