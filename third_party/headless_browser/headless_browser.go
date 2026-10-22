@@ -204,11 +204,11 @@ func New(options ...Option) *Browser {
 	}
 
 	// 传入 CloakBrowser 指纹参数以激活其源码级一致指纹引擎
+	platform := cfg.FingerprintPlatform
+	if platform == "" {
+		platform = autoFingerprintPlatform()
+	}
 	if cfg.Fingerprint {
-		platform := cfg.FingerprintPlatform
-		if platform == "" {
-			platform = autoFingerprintPlatform()
-		}
 		seed := cfg.FingerprintSeed
 		if seed == 0 {
 			seed = rand.Intn(89999) + 10000 // 10000-99999
@@ -258,7 +258,7 @@ func New(options ...Option) *Browser {
 
 	// 启用指纹时，构建一致 UA 覆盖，补回 go-rod 建页面丢失的 UA 版本保真度
 	if cfg.Fingerprint {
-		if ov, err := buildUAOverride(browser, cfg.Language); err != nil {
+		if ov, err := buildUAOverride(browser, cfg.Language, platform); err != nil {
 			logrus.Warnf("build UA override failed, skip: %v", err)
 		} else {
 			b.uaOverride = ov
@@ -272,10 +272,11 @@ func New(options ...Option) *Browser {
 //
 // 分工：版本相关字段（UA 串、brands、fullVersionList、uaFullVersion）由本覆盖负责，
 // 版本随 Browser.getVersion 实读、零硬编码（本机 145，Docker 146）；
-// platform/platformVersion/architecture 等平台字段留空，交给 CloakBrowser「始终生效」的
+// platform/platformVersion/bitness 等平台字段留空，交给 CloakBrowser「始终生效」的
 // 源码级补丁在真实页面上填充（已验证：留空不会被覆盖，补丁按 --fingerprint-platform 给出
-// 自洽的平台值，mac→macOS/arm，Docker→Windows）。这样本覆盖绝不与补丁的平台一致性冲突。
-func buildUAOverride(browser *rod.Browser, language string) (*proto.NetworkSetUserAgentOverride, error) {
+// 自洽的平台值，mac→macOS/arm，Docker→Windows）。例外是 Windows 画像的 architecture：
+// Linux arm64 上补丁把它留空，这里填 x86（见 uaArchitecture）；bitness 补丁照常给 64。
+func buildUAOverride(browser *rod.Browser, language, platform string) (*proto.NetworkSetUserAgentOverride, error) {
 	ver, err := proto.BrowserGetVersion{}.Call(browser)
 	if err != nil {
 		return nil, err
@@ -299,8 +300,9 @@ func buildUAOverride(browser *rod.Browser, language string) (*proto.NetworkSetUs
 				{Brand: "Google Chrome", Version: fullVersion},
 				{Brand: "Chromium", Version: fullVersion},
 			},
-			FullVersion: fullVersion,
-			// 平台字段留空：交给 CloakBrowser 始终生效的补丁填充
+			FullVersion:  fullVersion,
+			Architecture: uaArchitecture(platform),
+			// 其余平台字段留空：交给 CloakBrowser 始终生效的补丁填充
 		},
 	}
 	// Accept-Language 传不带 q 值的形式，否则 navigator.languages 会混入 "zh;q=0.9"
@@ -310,6 +312,16 @@ func buildUAOverride(browser *rod.Browser, language string) (*proto.NetworkSetUs
 
 	logrus.Infof("UA coherence: version=%s", ver.Product)
 	return ov, nil
+}
+
+// uaArchitecture 是 Client Hints 的 architecture：Windows 画像固定报 x86（真实 Windows x64 的 Chrome 就这样报）。
+// ARM 服务器上 CloakBrowser 的补丁把它留空，留空配 Windows 的 UA 是破绽；其他画像留空，照旧交给补丁。
+// Modified for ycl-2004/xiaohongshu-mcp; see NOTICE.
+func uaArchitecture(platform string) string {
+	if platform == "windows" {
+		return "x86"
+	}
+	return ""
 }
 
 // primaryLang 取语言主标签，如 "zh-CN" → "zh"。
