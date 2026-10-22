@@ -9,7 +9,8 @@ https://github.com/liaogx/xiaohongshu-mcp (Apache License 2.0), itself derived f
 upstream above. Ported parts are marked in their file headers.
 
 third_party/headless_browser is a copy of https://github.com/xpzouying/headless_browser v0.4.0
-(MIT License, third_party/headless_browser/LICENSE) with one change: the --no-sandbox flag is optional.
+(MIT License, third_party/headless_browser/LICENSE) with two changes: the --no-sandbox flag is optional, and
+the Windows persona's client-hint architecture is set to x86 (CloakBrowser on Linux arm64 leaves it empty).
 
 Branch ma/patches is https://github.com/mengbingrock/xiaohongshu-mcp main (ChineseInLA, Reddit,
 international rednote login, SMS/OTP login, video covers, runtime proxy) with the ycl-2004
