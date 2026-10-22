@@ -99,15 +99,23 @@ func TestExtractArchive_RefusesPathOutsideDir(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(root, "escaped"))
 }
 
-// 链接指到解压目录外（相对或绝对）一律拒绝；指在里面的照常建。
+// 链接只许相对、不带 ..（绝对路径、..、串起来绕出去的都拒绝）；指在同级或更深的照常建。
 func TestExtractArchive_RefusesSymlinkOutsideDir(t *testing.T) {
-	for _, link := range []string{"../outside", "/etc"} {
+	cases := map[string][]*tar.Header{
+		"相对 ..": {{Name: "lnk", Linkname: "../outside", Typeflag: tar.TypeSymlink, Mode: 0o777}},
+		"绝对路径":  {{Name: "lnk", Linkname: "/etc", Typeflag: tar.TypeSymlink, Mode: 0o777}},
+		"串起来绕出去": { // a -> . 之后 a/b -> ..（字面上落在里面，实际建在 dest/b，指到 dest 外）
+			{Name: "a", Linkname: ".", Typeflag: tar.TypeSymlink, Mode: 0o777},
+			{Name: "a/b", Linkname: "..", Typeflag: tar.TypeSymlink, Mode: 0o777},
+		},
+	}
+	for name, headers := range cases {
 		root := t.TempDir()
 		dir := filepath.Join(root, "browser")
 		require.NoError(t, os.Mkdir(dir, 0o755))
 		archive := filepath.Join(root, "evil.tar.gz")
-		writeTarGzEntries(t, archive, []*tar.Header{{Name: "lnk", Linkname: link, Typeflag: tar.TypeSymlink, Mode: 0o777}})
-		assert.ErrorContains(t, extractArchive(archive, dir), "链接指到了解压目录外", link)
+		writeTarGzEntries(t, archive, headers)
+		assert.ErrorContains(t, extractArchive(archive, dir), "链接可能指到解压目录外", name)
 	}
 
 	dir := t.TempDir()

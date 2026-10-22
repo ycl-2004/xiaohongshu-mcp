@@ -313,19 +313,33 @@ func extractTar(r io.Reader, destDir string) error {
 			}
 			out.Close()
 		case tar.TypeSymlink:
-			// 链接也不许指到解压目录外：不然后面的条目能顺着它写到外面
-			link := hdr.Linkname
-			if !filepath.IsAbs(link) {
-				link = filepath.Join(filepath.Dir(target), link)
+			// 链接只许相对、不带 ..：每一跳都只能指到自己所在目录或更深，串起来也出不了解压目录
+			// （只查字面上的落点不够：a -> . 再 a/b -> .. 能绕出去）
+			if !safeLink(hdr.Linkname) {
+				return fmt.Errorf("压缩包里的链接可能指到解压目录外: %s -> %s", hdr.Name, hdr.Linkname)
 			}
-			if !within(destDir, link) {
-				return fmt.Errorf("压缩包里的链接指到了解压目录外: %s -> %s", hdr.Name, hdr.Linkname)
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
 			}
-			_ = os.MkdirAll(filepath.Dir(target), 0o755)
-			_ = os.Symlink(hdr.Linkname, target)
+			if err := os.Symlink(hdr.Linkname, target); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+// safeLink 判断链接目标是否只指向同级或更深：不能是绝对路径，也不能有 .. 这一段。
+func safeLink(link string) bool {
+	if link == "" || filepath.IsAbs(link) {
+		return false
+	}
+	for _, part := range strings.Split(filepath.ToSlash(link), "/") {
+		if part == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // within 判断 target 是否在 dir 里面（含 dir 本身）。
