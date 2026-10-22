@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"bufio"
+	"compress/gzip"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
@@ -31,56 +32,85 @@ var browserVersionRaw string
 
 var browserVersion = strings.TrimSpace(browserVersionRaw)
 
+// linuxArm64Version 是 Linux arm64 内置浏览器的唯一版本源。上面的 CDN 没有 Linux arm64 版，这个平台直接用
+// CloakBrowser 在 GitHub Releases 上发布的免费版（免费版的 Linux arm64 只出到这一版，比 CDN 的版本旧）。
+// 升级时改 browser_version_linux_arm64.txt 和 linuxArm64SHA256。
+// Modified for ycl-2004/xiaohongshu-mcp; see NOTICE.
+//
+//go:embed browser_version_linux_arm64.txt
+var linuxArm64VersionRaw string
+
+var linuxArm64Version = strings.TrimSpace(linuxArm64VersionRaw)
+
+// linuxArm64SHA256 是 Linux arm64 压缩包的 sha256，取自该版本 Release 的 SHA256SUMS。钉在源码里：
+// Release 的附件可以被替换，和它从同一处下载的 SHA256SUMS 证明不了什么。
+const linuxArm64SHA256 = "8b71ce53b4fd131327331a31fba3835d71882d19bfaabde78dd0f5390bd16f45"
+
+const cloakReleaseBase = "https://github.com/CloakHQ/CloakBrowser/releases/download"
+
+// browserAsset 是一个平台的内置浏览器：版本、下载地址、压缩包名、解压后的可执行文件名，
+// 以及期望的 sha256（空：从下载地址同目录的 SHA256SUMS 取）。
+type browserAsset struct {
+	Version string
+	URL     string
+	Archive string
+	Bin     string
+	SHA256  string
+}
+
 func browserURL(name string) string {
 	return browserCDNBase + "/" + browserVersion + "/" + name
 }
 
-// platformAsset 返回当前 OS/arch 对应的下载文件名与解压后二进制文件名。
-// 第三个返回值为 false 表示当前平台无预编译二进制。
-func platformAsset() (assetName, binName string, ok bool) {
-	switch runtime.GOOS {
-	case "darwin":
-		if runtime.GOARCH != "arm64" {
-			return "", "", false
-		}
-		return "macos-arm64.dmg", "Chromium", true
-	case "linux":
-		if runtime.GOARCH != "amd64" {
-			return "", "", false
-		}
-		return "linux-x64.tar.xz", "chrome", true
-	case "windows":
-		if runtime.GOARCH != "amd64" {
-			return "", "", false
-		}
-		return "windows-x64.zip", "chrome.exe", true
-	}
-	return "", "", false
+func cdnAsset(archive, bin string) browserAsset {
+	return browserAsset{Version: browserVersion, URL: browserURL(archive), Archive: archive, Bin: bin}
 }
 
-func browserCacheDir() (string, error) {
+// platformAsset 返回 goos/goarch 对应的内置浏览器；第二个返回值为 false 表示这个平台没有预编译的浏览器。
+func platformAsset(goos, goarch string) (browserAsset, bool) {
+	switch goos + "/" + goarch {
+	case "darwin/arm64":
+		return cdnAsset("macos-arm64.dmg", "Chromium"), true
+	case "linux/amd64":
+		return cdnAsset("linux-x64.tar.xz", "chrome"), true
+	case "linux/arm64":
+		archive := "cloakbrowser-linux-arm64.tar.gz"
+		return browserAsset{
+			Version: linuxArm64Version,
+			URL:     cloakReleaseBase + "/chromium-v" + linuxArm64Version + "/" + archive,
+			Archive: archive,
+			Bin:     "chrome",
+			SHA256:  linuxArm64SHA256,
+		}, true
+	case "windows/amd64":
+		return cdnAsset("windows-x64.zip", "chrome.exe"), true
+	}
+	return browserAsset{}, false
+}
+
+func browserCacheDir(version string) (string, error) {
 	base, err := os.UserCacheDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, "xiaohongshu-mcp", "browser", browserVersion), nil
+	return filepath.Join(base, "xiaohongshu-mcp", "browser", version), nil
 }
 
 // EnsureBrowser 确保本地存在内置浏览器二进制，返回其路径。
 // 已缓存则直接返回；否则下载 → 校验 SHA256 → 解压。当前平台无预编译二进制时返回 error。
 func EnsureBrowser() (string, error) {
-	asset, binName, ok := platformAsset()
+	asset, ok := platformAsset(runtime.GOOS, runtime.GOARCH)
 	if !ok {
 		return "", fmt.Errorf("当前平台 %s/%s 无预编译浏览器，暂不支持", runtime.GOOS, runtime.GOARCH)
 	}
 
-	cacheDir, err := browserCacheDir()
+	cacheDir, err := browserCacheDir(asset.Version)
 	if err != nil {
 		return "", err
 	}
 
 	// 已缓存：遍历查找二进制
-	if bin := findBinary(cacheDir, binName); bin != "" {
+	if bin := findBinary(cacheDir, asset.Bin); bin != "" {
 		return bin, nil
 	}
 
@@ -89,11 +119,11 @@ func EnsureBrowser() (string, error) {
 	}
 
 	// 下载（重试 3 次）
-	logrus.Infof("首次运行：下载内置浏览器 %s（%s，约 140-190MB，仅一次）...", browserVersion, asset)
-	archivePath := filepath.Join(cacheDir, asset)
+	logrus.Infof("首次运行：下载内置浏览器 %s（%s，约 140-250MB，仅一次）...", asset.Version, asset.Archive)
+	archivePath := filepath.Join(cacheDir, asset.Archive)
 	var dlErr error
 	for attempt := 1; attempt <= 3; attempt++ {
-		if dlErr = downloadFile(browserURL(asset), archivePath); dlErr == nil {
+		if dlErr = downloadFile(asset.URL, archivePath); dlErr == nil {
 			break
 		}
 		logrus.Warnf("下载失败（第 %d/3 次）: %v", attempt, dlErr)
@@ -103,7 +133,7 @@ func EnsureBrowser() (string, error) {
 	if dlErr != nil {
 		return "", fmt.Errorf("下载内置浏览器失败: %w\n"+
 			"  本项目只用内置浏览器，缺它不继续。请检查网络后重试；\n"+
-			"  离线环境可手动下载 %s，解压到 %s 后重启。", dlErr, browserURL(asset), cacheDir)
+			"  离线环境可手动下载 %s，解压到 %s 后重启。", dlErr, asset.URL, cacheDir)
 	}
 	defer os.Remove(archivePath)
 
@@ -117,19 +147,22 @@ func EnsureBrowser() (string, error) {
 		return "", fmt.Errorf("解压失败: %w", err)
 	}
 
-	bin := findBinary(cacheDir, binName)
+	bin := findBinary(cacheDir, asset.Bin)
 	if bin == "" {
-		return "", fmt.Errorf("解压后未找到二进制 %s", binName)
+		return "", fmt.Errorf("解压后未找到二进制 %s", asset.Bin)
 	}
 	logrus.Infof("内置浏览器就绪: %s", bin)
 	return bin, nil
 }
 
-// verifySHA256 下载同目录的 SHA256SUMS，校验 asset 的哈希。
-func verifySHA256(archivePath, asset string) error {
-	want, err := fetchExpectedSHA(asset)
-	if err != nil {
-		return err
+// verifySHA256 校验压缩包的哈希：源码里钉了 sha256 就用它，否则下载 CDN 同目录的 SHA256SUMS。
+func verifySHA256(archivePath string, asset browserAsset) error {
+	want := asset.SHA256
+	if want == "" {
+		var err error
+		if want, err = fetchExpectedSHA(asset.Archive); err != nil {
+			return err
+		}
 	}
 	f, err := os.Open(archivePath)
 	if err != nil {
@@ -142,7 +175,7 @@ func verifySHA256(archivePath, asset string) error {
 	}
 	got := hex.EncodeToString(h.Sum(nil))
 	if !strings.EqualFold(got, want) {
-		return fmt.Errorf("%s SHA256 不匹配：期望 %s，实际 %s", asset, want, got)
+		return fmt.Errorf("%s SHA256 不匹配：期望 %s，实际 %s", asset.Archive, want, got)
 	}
 	return nil
 }
@@ -209,6 +242,8 @@ func extractArchive(archivePath, destDir string) error {
 	switch {
 	case strings.HasSuffix(archivePath, ".tar.xz"):
 		return extractTarXz(archivePath, destDir)
+	case strings.HasSuffix(archivePath, ".tar.gz"):
+		return extractTarGz(archivePath, destDir)
 	case strings.HasSuffix(archivePath, ".zip"):
 		return extractZip(archivePath, destDir)
 	case strings.HasSuffix(archivePath, ".dmg"):
@@ -227,7 +262,26 @@ func extractTarXz(archivePath, destDir string) error {
 	if err != nil {
 		return err
 	}
-	tr := tar.NewReader(xzr)
+	return extractTar(xzr, destDir)
+}
+
+func extractTarGz(archivePath, destDir string) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	gzr, err := gzip.NewReader(f)
+	if err != nil {
+		return err
+	}
+	defer gzr.Close()
+	return extractTar(gzr, destDir)
+}
+
+// extractTar 把 tar 流解到 destDir；路径跳出 destDir 的条目直接报错。
+func extractTar(r io.Reader, destDir string) error {
+	tr := tar.NewReader(r)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -237,6 +291,9 @@ func extractTarXz(archivePath, destDir string) error {
 			return err
 		}
 		target := filepath.Join(destDir, hdr.Name)
+		if !within(destDir, target) {
+			return fmt.Errorf("压缩包里的路径跳出了解压目录: %s", hdr.Name)
+		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, 0o755); err != nil {
@@ -261,6 +318,12 @@ func extractTarXz(archivePath, destDir string) error {
 		}
 	}
 	return nil
+}
+
+// within 判断 target 是否在 dir 里面（含 dir 本身）。
+func within(dir, target string) bool {
+	rel, err := filepath.Rel(dir, target)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func extractZip(archivePath, destDir string) error {
