@@ -272,9 +272,10 @@ func New(options ...Option) *Browser {
 //
 // 分工：版本相关字段（UA 串、brands、fullVersionList、uaFullVersion）由本覆盖负责，
 // 版本随 Browser.getVersion 实读、零硬编码（本机 145，Docker 146）；
-// platform/platformVersion/architecture 等平台字段留空，交给 CloakBrowser「始终生效」的
+// platform/platformVersion/bitness 等平台字段留空，交给 CloakBrowser「始终生效」的
 // 源码级补丁在真实页面上填充（已验证：留空不会被覆盖，补丁按 --fingerprint-platform 给出
-// 自洽的平台值，mac→macOS/arm，Docker→Windows）。这样本覆盖绝不与补丁的平台一致性冲突。
+// 自洽的平台值，mac→macOS/arm，Docker→Windows）。例外是 Windows 画像的 architecture：
+// Linux arm64 上补丁把它留空，这里填 x86（见 uaArchitecture）；bitness 补丁照常给 64。
 func buildUAOverride(browser *rod.Browser, language, platform string) (*proto.NetworkSetUserAgentOverride, error) {
 	ver, err := proto.BrowserGetVersion{}.Call(browser)
 	if err != nil {

@@ -313,6 +313,14 @@ func extractTar(r io.Reader, destDir string) error {
 			}
 			out.Close()
 		case tar.TypeSymlink:
+			// 链接也不许指到解压目录外：不然后面的条目能顺着它写到外面
+			link := hdr.Linkname
+			if !filepath.IsAbs(link) {
+				link = filepath.Join(filepath.Dir(target), link)
+			}
+			if !within(destDir, link) {
+				return fmt.Errorf("压缩包里的链接指到了解压目录外: %s -> %s", hdr.Name, hdr.Linkname)
+			}
 			_ = os.MkdirAll(filepath.Dir(target), 0o755)
 			_ = os.Symlink(hdr.Linkname, target)
 		}
@@ -334,6 +342,9 @@ func extractZip(archivePath, destDir string) error {
 	defer zr.Close()
 	for _, zf := range zr.File {
 		target := filepath.Join(destDir, zf.Name)
+		if !within(destDir, target) {
+			return fmt.Errorf("压缩包里的路径跳出了解压目录: %s", zf.Name)
+		}
 		if zf.FileInfo().IsDir() {
 			if err := os.MkdirAll(target, 0o755); err != nil {
 				return err

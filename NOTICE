@@ -44,5 +44,5 @@ per process (XHS_SITE; session files are tagged with their site and never loaded
 waiting for result hydration instead of full-page stability (ported from upstream PRs #835 and #839).
 On linux/arm64 the built-in browser is CloakBrowser's free Linux arm64 build from its GitHub Releases
 (browser/browser_version_linux_arm64.txt, archive sha256 pinned in the source; the CDN has no Linux arm64
-build), and browser archives are extracted only inside the cache directory.
+build), and archive entries and symlinks that would point outside the cache directory are refused.
 Original authors are not responsible for these modifications.

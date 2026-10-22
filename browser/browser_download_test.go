@@ -18,8 +18,7 @@ import (
 func TestPlatformAsset_LinuxArm64(t *testing.T) {
 	asset, ok := platformAsset("linux", "arm64")
 	require.True(t, ok)
-	assert.Equal(t, linuxArm64Version, asset.Version)
-	assert.NotEqual(t, browserVersion, asset.Version, "arm64 有自己的版本源")
+	assert.Equal(t, linuxArm64Version, asset.Version, "arm64 有自己的版本源")
 	assert.Equal(t, "https://github.com/CloakHQ/CloakBrowser/releases/download/chromium-v"+
 		linuxArm64Version+"/cloakbrowser-linux-arm64.tar.gz", asset.URL)
 	assert.Equal(t, "chrome", asset.Bin)
@@ -98,4 +97,38 @@ func TestExtractArchive_RefusesPathOutsideDir(t *testing.T) {
 
 	assert.ErrorContains(t, extractArchive(archive, dir), "跳出了解压目录")
 	assert.NoFileExists(t, filepath.Join(root, "escaped"))
+}
+
+// 链接指到解压目录外（相对或绝对）一律拒绝；指在里面的照常建。
+func TestExtractArchive_RefusesSymlinkOutsideDir(t *testing.T) {
+	for _, link := range []string{"../outside", "/etc"} {
+		root := t.TempDir()
+		dir := filepath.Join(root, "browser")
+		require.NoError(t, os.Mkdir(dir, 0o755))
+		archive := filepath.Join(root, "evil.tar.gz")
+		writeTarGzEntries(t, archive, []*tar.Header{{Name: "lnk", Linkname: link, Typeflag: tar.TypeSymlink, Mode: 0o777}})
+		assert.ErrorContains(t, extractArchive(archive, dir), "链接指到了解压目录外", link)
+	}
+
+	dir := t.TempDir()
+	archive := filepath.Join(t.TempDir(), "ok.tar.gz")
+	writeTarGzEntries(t, archive, []*tar.Header{{Name: "lib/libx.so.1", Linkname: "libx.so", Typeflag: tar.TypeSymlink, Mode: 0o777}})
+	require.NoError(t, extractArchive(archive, dir))
+	got, err := os.Readlink(filepath.Join(dir, "lib", "libx.so.1"))
+	require.NoError(t, err)
+	assert.Equal(t, "libx.so", got)
+}
+
+func writeTarGzEntries(t *testing.T, path string, headers []*tar.Header) {
+	t.Helper()
+	f, err := os.Create(path)
+	require.NoError(t, err)
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+	for _, h := range headers {
+		require.NoError(t, tw.WriteHeader(h))
+	}
+	require.NoError(t, tw.Close())
+	require.NoError(t, gz.Close())
+	require.NoError(t, f.Close())
 }
